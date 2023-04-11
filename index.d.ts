@@ -1,19 +1,19 @@
-import Dispatcher from'./types/dispatcher'
+import Dispatcher from './types/dispatcher'
 import { setGlobalDispatcher, getGlobalDispatcher } from './types/global-dispatcher'
 import { setGlobalOrigin, getGlobalOrigin } from './types/global-origin'
-import Pool from'./types/pool'
+import Pool from './types/pool'
 import { RedirectHandler, DecoratorHandler } from './types/handlers'
 
 import BalancedPool from './types/balanced-pool'
-import Client from'./types/client'
-import buildConnector from'./types/connector'
-import errors from'./types/errors'
-import Agent from'./types/agent'
-import MockClient from'./types/mock-client'
-import MockPool from'./types/mock-pool'
-import MockAgent from'./types/mock-agent'
-import mockErrors from'./types/mock-errors'
-import ProxyAgent from'./types/proxy-agent'
+import Client from './types/client'
+import buildConnector from './types/connector'
+import errors from './types/errors'
+import Agent from './types/agent'
+import MockClient from './types/mock-client'
+import MockPool from './types/mock-pool'
+import MockAgent from './types/mock-agent'
+import mockErrors from './types/mock-errors'
+import ProxyAgent from './types/proxy-agent'
 import { request, pipeline, stream, connect, upgrade } from './types/api'
 
 export * from './types/cookies'
@@ -33,9 +33,9 @@ export default Undici
 declare namespace Undici {
   var Dispatcher: typeof import('./types/dispatcher').default
   var Pool: typeof import('./types/pool').default;
-  var RedirectHandler: typeof import ('./types/handlers').RedirectHandler
-  var DecoratorHandler: typeof import ('./types/handlers').DecoratorHandler
-  var createRedirectInterceptor: typeof import ('./types/interceptors').createRedirectInterceptor
+  var RedirectHandler: typeof import('./types/handlers').RedirectHandler
+  var DecoratorHandler: typeof import('./types/handlers').DecoratorHandler
+  var createRedirectInterceptor: typeof import('./types/interceptors').createRedirectInterceptor
   var BalancedPool: typeof import('./types/balanced-pool').default;
   var Client: typeof import('./types/client').default;
   var buildConnector: typeof import('./types/connector').default;
@@ -53,5 +53,7 @@ declare namespace Undici {
   var MockAgent: typeof import('./types/mock-agent').default;
   var mockErrors: typeof import('./types/mock-errors').default;
   var fetch: typeof import('./types/fetch').fetch;
+
+  var Duplex: typeof import('stream').Duplex;
   var caches: typeof import('./types/cache').caches;
 }

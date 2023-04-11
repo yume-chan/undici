@@ -44,7 +44,7 @@ module.exports.createRedirectInterceptor = createRedirectInterceptor
 module.exports.buildConnector = buildConnector
 module.exports.errors = errors
 
-function makeDispatcher (fn) {
+function makeDispatcher(fn) {
   return (url, opts, handler) => {
     if (typeof opts === 'function') {
       handler = opts
@@ -98,7 +98,7 @@ module.exports.getGlobalDispatcher = getGlobalDispatcher
 
 if (util.nodeMajor > 16 || (util.nodeMajor === 16 && util.nodeMinor >= 8)) {
   let fetchImpl = null
-  module.exports.fetch = async function fetch (resource) {
+  module.exports.fetch = async function fetch(resource) {
     if (!fetchImpl) {
       fetchImpl = require('./lib/fetch').fetch
     }
@@ -160,3 +160,5 @@ module.exports.MockClient = MockClient
 module.exports.MockPool = MockPool
 module.exports.MockAgent = MockAgent
 module.exports.mockErrors = mockErrors
+
+module.exports.Duplex = require('stream').Duplex;

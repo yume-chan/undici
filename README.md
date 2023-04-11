@@ -2,7 +2,7 @@
 
 [![Node CI](https://github.com/nodejs/undici/actions/workflows/nodejs.yml/badge.svg)](https://github.com/nodejs/undici/actions/workflows/nodejs.yml) [![js-standard-style](https://img.shields.io/badge/code%20style-standard-brightgreen.svg?style=flat)](http://standardjs.com/) [![npm version](https://badge.fury.io/js/undici.svg)](https://badge.fury.io/js/undici) [![codecov](https://codecov.io/gh/nodejs/undici/branch/main/graph/badge.svg?token=yZL6LtXkOA)](https://codecov.io/gh/nodejs/undici)
 
-An HTTP/1.1 client, written from scratch for Node.js.
+An HTTP/1.1 client, written from scratch for Node.js and Browsers.
 
 > Undici means eleven in Italian. 1.1 -> 11 -> Eleven -> Undici.
 It is also a Stranger Things reference.
@@ -411,9 +411,9 @@ Refs: https://fetch.spec.whatwg.org/#atomic-http-redirect-handling
 
 If you experience problem when connecting to a remote server that is resolved by your DNS servers to a IPv6 (AAAA record)
 first, there are chances that your local router or ISP might have problem connecting to IPv6 networks. In that case
-undici will throw an error with code `UND_ERR_CONNECT_TIMEOUT`. 
+undici will throw an error with code `UND_ERR_CONNECT_TIMEOUT`.
 
-If the target server resolves to both a IPv6 and IPv4 (A records) address and you are using a compatible Node version 
+If the target server resolves to both a IPv6 and IPv4 (A records) address and you are using a compatible Node version
 (18.3.0 and above), you can fix the problem by providing the `autoSelectFamily` option (support by both `undici.request`
 and `undici.Agent`) which will enable the family autoselection algorithm when establishing the connection.
 
