@@ -54,6 +54,7 @@ declare namespace Undici {
   var mockErrors: typeof import('./types/mock-errors').default;
   var fetch: typeof import('./types/fetch').fetch;
 
-  var Duplex: typeof import('stream').Duplex;
-  var caches: typeof import('./types/cache').caches;
 }
+
+export const Duplex: typeof import('stream').Duplex
+export const Symbols: { readonly kHostHeader: unique symbol };

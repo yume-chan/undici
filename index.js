@@ -162,3 +162,4 @@ module.exports.MockAgent = MockAgent
 module.exports.mockErrors = mockErrors
 
 module.exports.Duplex = require('stream').Duplex;
+module.exports.Symbols = require("./lib/core/symbols");
