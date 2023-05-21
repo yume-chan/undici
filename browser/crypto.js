@@ -1,4 +1,4 @@
-import JsSha from 'jssha';
+import JsSha from "jssha";
 
 export function randomBytes(length) {
   const buffer = Buffer.alloc(length);
@@ -11,21 +11,41 @@ export function createHash(algorithm) {
 }
 
 class Hash {
-  #sha
+  #sha;
 
   constructor(algorithm) {
+    switch (algorithm) {
+      case "sha1":
+        algorithm = "SHA-1";
+        break;
+      case "sha256":
+        algorithm = "SHA-256";
+        break;
+      case "sha384":
+        algorithm = "SHA-384";
+        break;
+      case "sha512":
+        algorithm = "SHA-512";
+        break;
+    }
     this.#sha = new JsSha(algorithm, "UINT8ARRAY");
   }
 
   update(data) {
-    this.#sha.update(data);
+    this.#sha.update(Buffer.from(data));
+    return this;
   }
 
-  digest() {
-    return Buffer.from(this.#sha.getHash("ARRAYBUFFER"));
+  digest(encoding) {
+    const buffer = Buffer.from(this.#sha.getHash("ARRAYBUFFER"));
+    if (encoding) {
+      return buffer.toString(encoding);
+    } else {
+      return buffer;
+    }
   }
 }
 
 export function getHashes() {
-  return ["sha256", "sha384", "sha512"];
+  return ["sha1", "sha256", "sha384", "sha512"];
 }
