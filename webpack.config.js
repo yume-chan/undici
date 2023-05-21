@@ -35,7 +35,6 @@ module.exports = {
       console: require.resolve("console-browserify"),
       crypto: require.resolve("crypto-browserify"),
       http: require.resolve("stream-http"),
-      "node-buffer": require.resolve("buffer/"),
       querystring: require.resolve("querystring-es3"),
       stream: require.resolve("readable-stream"),
       string_decoder: require.resolve("string_decoder"),
@@ -44,7 +43,7 @@ module.exports = {
   },
   plugins: [
     new webpack.ProvidePlugin({
-      Buffer: [require.resolve("buffer/"), "Buffer"],
+      Buffer: [require.resolve("buffer-es6"), "Buffer"],
       process: require.resolve("./browser/process.js"),
     }),
   ],

@@ -10,4 +10,4 @@ export function resolveObjectURL() {
   throw new Error("Not implemented");
 }
 
-export { Buffer, kMaxLength } from 'node-buffer';
+export { Buffer, kMaxLength } from 'buffer-es6';

@@ -1,4 +1,4 @@
-import { Inflate } from "pako/dist/pako_inflate";
+import { Inflate } from "pako/dist/pako_inflate.js";
 import { Transform } from "stream";
 
 class NodeInflate extends Transform {

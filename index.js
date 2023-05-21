@@ -10,10 +10,6 @@ const util = require('./lib/core/util')
 const { InvalidArgumentError } = errors
 const api = require('./lib/api')
 const buildConnector = require('./lib/core/connect')
-const MockClient = require('./lib/mock/mock-client')
-const MockAgent = require('./lib/mock/mock-agent')
-const MockPool = require('./lib/mock/mock-pool')
-const mockErrors = require('./lib/mock/mock-errors')
 const ProxyAgent = require('./lib/proxy-agent')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('./lib/global')
 const DecoratorHandler = require('./lib/handler/DecoratorHandler')
@@ -156,10 +152,6 @@ module.exports.pipeline = makeDispatcher(api.pipeline)
 module.exports.connect = makeDispatcher(api.connect)
 module.exports.upgrade = makeDispatcher(api.upgrade)
 
-module.exports.MockClient = MockClient
-module.exports.MockPool = MockPool
-module.exports.MockAgent = MockAgent
-module.exports.mockErrors = mockErrors
-
 module.exports.Duplex = require('stream').Duplex;
 module.exports.Symbols = require("./lib/core/symbols");
+module.exports.Buffer = require("buffer").Buffer;

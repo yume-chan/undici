@@ -1,17 +1,16 @@
-const EventEmitter = require("events");
-const { request, Client, Agent } = require("./index");
+import { request, Agent, Duplex, Buffer } from "./dist/main.js";
 
-class FakeSocket extends EventEmitter {
+class FakeSocket extends Duplex {
   write(...args) {
     console.log("write", ...args);
-    process.nextTick(() => {
+    Promise.resolve().then(() => {
       this.emit("readable");
     });
   }
 
   read() {
     this.read = () => { return null; };
-    process.nextTick(() => { this.emit("end"); })
+    Promise.resolve().then(() => { this.emit("end"); })
     return Buffer.from("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\n[1,2]");
   }
 }

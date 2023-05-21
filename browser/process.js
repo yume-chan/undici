@@ -1,13 +1,20 @@
-export function nextTick(callback, ...args) {
+function nextTick(callback, ...args) {
   Promise.resolve().then(() => callback(...args));
 }
 
-export const env = {};
+const env = {};
 
-export const versions = {
+const versions = {
   node: "20.0",
 };
 
-export function emitWarning(message) {
+function emitWarning(message) {
   console.warn(message);
 }
+
+export default {
+  nextTick,
+  env,
+  versions,
+  emitWarning,
+};
