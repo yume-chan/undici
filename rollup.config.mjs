@@ -4,7 +4,7 @@ import aliasPlugin from "@rollup/plugin-alias";
 import injectPlugin from "@rollup/plugin-inject";
 import jsonPlugin from "@rollup/plugin-json";
 import terserPlugin from "@rollup/plugin-terser";
-import { importMetaAssets as importMetaAssetsPlugin } from "@web/rollup-plugin-import-meta-assets";
+import { importMetaUrlAssets as importMetaUrlAssetsPlugin } from "./scripts/import-meta-url-asset.mjs";
 import cleanPlugin from "@rollup-extras/plugin-clean";
 import { fileURLToPath } from "node:url";
 
@@ -117,6 +117,6 @@ export default {
       },
     }),
     jsonPlugin({ preferConst: true, compact: true }),
-    importMetaAssetsPlugin(),
+    importMetaUrlAssetsPlugin(),
   ],
 };
