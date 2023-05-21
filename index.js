@@ -17,12 +17,12 @@ const RedirectHandler = require('./lib/handler/RedirectHandler')
 const createRedirectInterceptor = require('./lib/interceptor/redirectInterceptor')
 
 let hasCrypto
-try {
-  require('crypto')
+// try {
+//   require('crypto')
   hasCrypto = true
-} catch {
-  hasCrypto = false
-}
+// } catch {
+  // hasCrypto = false
+// }
 
 Object.assign(Dispatcher.prototype, api)
 
@@ -92,7 +92,7 @@ function makeDispatcher(fn) {
 module.exports.setGlobalDispatcher = setGlobalDispatcher
 module.exports.getGlobalDispatcher = getGlobalDispatcher
 
-if (util.nodeMajor > 16 || (util.nodeMajor === 16 && util.nodeMinor >= 8)) {
+// if (util.nodeMajor > 16 || (util.nodeMajor === 16 && util.nodeMinor >= 8)) {
   let fetchImpl = null
   module.exports.fetch = async function fetch(resource) {
     if (!fetchImpl) {
@@ -124,9 +124,9 @@ if (util.nodeMajor > 16 || (util.nodeMajor === 16 && util.nodeMinor >= 8)) {
   // Cache & CacheStorage are tightly coupled with fetch. Even if it may run
   // in an older version of Node, it doesn't have any use without fetch.
   module.exports.caches = new CacheStorage(kConstruct)
-}
+// }
 
-if (util.nodeMajor >= 16) {
+// if (util.nodeMajor >= 16) {
   const { deleteCookie, getCookies, getSetCookies, setCookie } = require('./lib/cookies')
 
   module.exports.deleteCookie = deleteCookie
@@ -138,13 +138,13 @@ if (util.nodeMajor >= 16) {
 
   module.exports.parseMIMEType = parseMIMEType
   module.exports.serializeAMimeType = serializeAMimeType
-}
+// }
 
-if (util.nodeMajor >= 18 && hasCrypto) {
+// if (util.nodeMajor >= 18 && hasCrypto) {
   const { WebSocket } = require('./lib/websocket/websocket')
 
   module.exports.WebSocket = WebSocket
-}
+// }
 
 module.exports.request = makeDispatcher(api.request)
 module.exports.stream = makeDispatcher(api.stream)

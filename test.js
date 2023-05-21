@@ -1,4 +1,4 @@
-import { request, Agent, Duplex, Buffer } from "./dist/main.js";
+import { request, Agent, Duplex, Buffer } from "./dist/main.mjs";
 
 class FakeSocket extends Duplex {
   write(...args) {
