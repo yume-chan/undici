@@ -1,6 +1,6 @@
 {
   "name": "@yume-chan/undici-browser",
-  "version": "5.22.0-mod.1",
+  "version": "5.22.1-mod.1",
   "description": "An HTTP/1.1 client, written from scratch for Node.js and Browsers",
   "homepage": "https://undici.nodejs.org",
   "bugs": {
