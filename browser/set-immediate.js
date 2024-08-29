@@ -1,4 +1,4 @@
-export default function setImmediate(callback, ...args) {
+export function setImmediate(callback, ...args) {
   const id = { cancelled: false };
   Promise.resolve().then(() => {
     if (id.cancelled) {
@@ -8,3 +8,7 @@ export default function setImmediate(callback, ...args) {
   });
   return id;
 };
+
+export function clearImmediate(id) {
+  id.cancelled = true;
+}
