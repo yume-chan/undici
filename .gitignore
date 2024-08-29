@@ -80,6 +80,8 @@ fuzz-results-*.json
 undici-fetch.js
 /test/imports/undici-import.js
 
+dist
+
 # .npmrc has platform specific value for windows
 .npmrc
 
