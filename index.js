@@ -13,10 +13,6 @@ const util = require('./lib/core/util')
 const { InvalidArgumentError } = errors
 const api = require('./lib/api')
 const buildConnector = require('./lib/core/connect')
-const MockClient = require('./lib/mock/mock-client')
-const MockAgent = require('./lib/mock/mock-agent')
-const MockPool = require('./lib/mock/mock-pool')
-const mockErrors = require('./lib/mock/mock-errors')
 const RetryHandler = require('./lib/handler/retry-handler')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('./lib/global')
 const DecoratorHandler = require('./lib/handler/decorator-handler')
@@ -49,7 +45,7 @@ module.exports.util = {
   headerNameToString: util.headerNameToString
 }
 
-function makeDispatcher (fn) {
+function makeDispatcher(fn) {
   return (url, opts, handler) => {
     if (typeof opts === 'function') {
       handler = opts
@@ -102,7 +98,7 @@ module.exports.setGlobalDispatcher = setGlobalDispatcher
 module.exports.getGlobalDispatcher = getGlobalDispatcher
 
 const fetchImpl = require('./lib/web/fetch').fetch
-module.exports.fetch = async function fetch (init, options = undefined) {
+module.exports.fetch = async function fetch(init, options = undefined) {
   try {
     return await fetchImpl(init, options)
   } catch (err) {
@@ -154,10 +150,7 @@ module.exports.pipeline = makeDispatcher(api.pipeline)
 module.exports.connect = makeDispatcher(api.connect)
 module.exports.upgrade = makeDispatcher(api.upgrade)
 
-module.exports.MockClient = MockClient
-module.exports.MockPool = MockPool
-module.exports.MockAgent = MockAgent
-module.exports.mockErrors = mockErrors
+module.exports.Symbols = require("./lib/core/symbols");
 
 const { EventSource } = require('./lib/web/eventsource/eventsource')
 
