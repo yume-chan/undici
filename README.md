@@ -2,7 +2,89 @@
 
 [![Node CI](https://github.com/nodejs/undici/actions/workflows/nodejs.yml/badge.svg)](https://github.com/nodejs/undici/actions/workflows/nodejs.yml) [![neostandard javascript style](https://img.shields.io/badge/neo-standard-7fffff?style=flat\&labelColor=ff80ff)](https://github.com/neostandard/neostandard) [![npm version](https://badge.fury.io/js/undici.svg)](https://badge.fury.io/js/undici) [![codecov](https://codecov.io/gh/nodejs/undici/branch/main/graph/badge.svg?token=yZL6LtXkOA)](https://codecov.io/gh/nodejs/undici)
 
-An HTTP/1.1 client, written from scratch for Node.js.
+An HTTP/1.1 client, written from scratch for browsers.
+
+## Changes in this fork
+
+### Install
+
+```
+npm i @yume-chan/undici-browser
+```
+
+### Create Connection
+
+It's not possible to create TCP socket in browser, so you need to create a custom connector to send and receive data.
+
+For example, you may adapt it to a WebSockify server.
+
+```js
+import { Duplex } from "readable-stream";
+
+class YourConnector extends Duplex {
+  constructor() {
+    super({
+      read() {
+        this.push(new Uint8Array());
+      },
+      write(chunk, encoding, callback) {
+        // send chunk
+        callback();
+      },
+    });
+  }
+}
+```
+
+This package uses `readable-stream`, but any Node.js `Duplex`-compatible libraries should work.
+
+### Create Agent
+
+Undici supports `Agent`s, which supports custom connectors:
+
+```js
+const agent = new Agent({
+  async connect(options, callback) {
+    callback(null, new YourConnector());
+  },
+});
+```
+
+### Send Request
+
+Then you can send requests using the `Agent`:
+
+```js
+const response = await request(`http://www.example.com`, {
+  dispatcher: agent,
+});
+const json = await response.body.json();
+```
+
+Requests without custom `Agent`s will throw an error.
+
+### How does this work
+
+`buffer`, `events`, `jssha`, `readable-stream`, `util` packages are used to polyfill some complex Node.js built-in packages.
+
+Only the minimal required APIs in other packages are implemented to run Undici.
+
+Rollup is used to replace imports and references to them.
+
+### Bundle
+
+This package externalized all its dependencies, expecting those to be shared with your other dependencies.
+
+This means it doesn't run in browsers directly. A bundler is required to handle the dependencies.
+
+When all dependencies are bundled, the `.js` file is around 380KB, with two `.wasm` files 50KB each.
+
+### Other things not working
+
+* `interceptors.dns`: DNS requests are not supported
+* `cacheStores.SqliteCacheStore`: SQLite is not supported
+
+---
 
 > Undici means eleven in Italian. 1.1 -> 11 -> Eleven -> Undici.
 It is also a Stranger Things reference.
