@@ -1,7 +1,6 @@
 'use strict'
 
 const { test } = require('node:test')
-const assert = require('node:assert')
 const { once } = require('node:events')
 const { createServer } = require('node:http')
 const { fetch } = require('../..')
@@ -9,7 +8,7 @@ const { closeServerAsPromise } = require('../utils/node-http')
 
 // https://github.com/nodejs/undici/issues/2021
 test('content-length header is removed on redirect', async (t) => {
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     if (req.url === '/redirect') {
       res.writeHead(302, { Location: '/redirect2' })
       res.end()
@@ -24,7 +23,7 @@ test('content-length header is removed on redirect', async (t) => {
 
   const body = 'a+b+c'
 
-  await assert.doesNotReject(fetch(`http://localhost:${server.address().port}/redirect`, {
+  await t.assert.doesNotReject(fetch(`http://localhost:${server.address().port}/redirect`, {
     method: 'POST',
     body,
     headers: {

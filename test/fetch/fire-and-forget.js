@@ -1,19 +1,88 @@
 'use strict'
 
 const { randomFillSync } = require('node:crypto')
-const { setTimeout: sleep } = require('timers/promises')
+const { setTimeout: sleep, setImmediate: nextTick } = require('node:timers/promises')
 const { test } = require('node:test')
-const { fetch, Agent, setGlobalDispatcher } = require('../..')
+const { fetch, Request, Response, Agent, setGlobalDispatcher, getGlobalDispatcher } = require('../..')
 const { createServer } = require('node:http')
 const { closeServerAsPromise } = require('../utils/node-http')
 
 const blob = randomFillSync(new Uint8Array(1024 * 512))
 
-// Enable when/if FinalizationRegistry in Node.js 18 becomes stable again
-const isNode18 = process.version.startsWith('v18')
 const hasGC = typeof global.gc !== 'undefined'
 
-test('does not need the body to be consumed to continue', { timeout: 180_000, skip: isNode18 }, async (t) => {
+// https://github.com/nodejs/undici/issues/4150
+test('test finalizer cloned request', async () => {
+  if (!hasGC) {
+    throw new Error('gc is not available. Run with \'--expose-gc\'.')
+  }
+
+  const request = new Request('http://localhost', { method: 'POST', body: 'Hello' })
+
+  request.clone()
+
+  await nextTick()
+  // eslint-disable-next-line no-undef
+  gc()
+
+  await nextTick()
+  await request.arrayBuffer() // check consume body
+})
+
+test('test finalizer cloned response', async () => {
+  if (!hasGC) {
+    throw new Error('gc is not available. Run with \'--expose-gc\'.')
+  }
+
+  const response = new Response('Hello')
+
+  response.clone()
+
+  await nextTick()
+  // eslint-disable-next-line no-undef
+  gc()
+
+  await nextTick()
+  await response.arrayBuffer() // check consume body
+})
+
+// https://github.com/nodejs/undici/pull/4803
+test('should not call cancel() during GC (new Response)', async () => {
+  if (!hasGC) {
+    throw new Error('gc is not available. Run with \'--expose-gc\'.')
+  }
+
+  let response = new Response(new ReadableStream({
+    start () {},
+
+    pull (ctrl) {
+      ctrl.enqueue(new Uint8Array([72, 101, 108, 108, 111])) // Hello
+    },
+
+    cancel () {
+      throw new Error('should be unreachable')
+    }
+  }))
+
+  let cloned = response.clone()
+
+  const body = response.body
+
+  await nextTick()
+  cloned.body.cancel()
+
+  cloned = null
+  response = null
+
+  await nextTick()
+  // eslint-disable-next-line no-undef
+  gc()
+
+  await nextTick(); // handle 'uncaughtException' event
+  (function () {})(body) // save a reference without triggering linter warnings
+})
+
+test('does not need the body to be consumed to continue', { timeout: 180_000 }, async (t) => {
   if (!hasGC) {
     throw new Error('gc is not available. Run with \'--expose-gc\'.')
   }
@@ -21,8 +90,12 @@ test('does not need the body to be consumed to continue', { timeout: 180_000, sk
     keepAliveMaxTimeout: 10,
     keepAliveTimeoutThreshold: 10
   })
+  const previousDispatcher = getGlobalDispatcher()
   setGlobalDispatcher(agent)
-  const server = createServer((req, res) => {
+  t.after(() => {
+    setGlobalDispatcher(previousDispatcher)
+  })
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeHead(200)
     res.end(blob)
   })

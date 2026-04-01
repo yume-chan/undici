@@ -1,6 +1,5 @@
 'use strict'
 
-const assert = require('node:assert')
 const { once } = require('node:events')
 const { createServer } = require('node:http')
 const { test } = require('node:test')
@@ -10,7 +9,7 @@ const { fetch } = require('../..')
 test('421 requests with a body work as expected', async (t) => {
   const expected = 'This is a 421 Misdirected Request response.'
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.statusCode = 421
     res.end(expected)
   }).listen(0)
@@ -27,7 +26,7 @@ test('421 requests with a body work as expected', async (t) => {
       body
     })
 
-    assert.deepStrictEqual(response.status, 421)
-    assert.deepStrictEqual(await response.text(), expected)
+    t.assert.deepStrictEqual(response.status, 421)
+    t.assert.deepStrictEqual(await response.text(), expected)
   }
 })

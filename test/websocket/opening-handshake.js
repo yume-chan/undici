@@ -1,18 +1,28 @@
 'use strict'
 
 const { test } = require('node:test')
-const assert = require('node:assert')
+const { once } = require('node:events')
 const { createServer } = require('node:http')
-const { WebSocketServer } = require('ws')
-const { WebSocket } = require('../..')
+const { createSecureServer } = require('node:http2')
 
-test('WebSocket connecting to server that isn\'t a Websocket server', () => {
+const { tspl } = require('@matteo.collina/tspl')
+const { WebSocketServer, WebSocket: WSWebsocket } = require('ws')
+const { key, cert } = require('@metcoder95/https-pem')
+const { WebSocket, Agent } = require('../..')
+const { runtimeFeatures } = require('../../lib/util/runtime-features')
+const { uid } = require('../../lib/web/websocket/constants')
+
+const crypto = runtimeFeatures.has('crypto')
+  ? require('node:crypto')
+  : null
+
+test('WebSocket connecting to server that isn\'t a Websocket server', (t) => {
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      assert.equal(req.headers.connection, 'upgrade')
-      assert.equal(req.headers.upgrade, 'websocket')
-      assert.ok(req.headers['sec-websocket-key'])
-      assert.equal(req.headers['sec-websocket-version'], '13')
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+      t.assert.strictEqual(req.headers.connection, 'upgrade')
+      t.assert.strictEqual(req.headers.upgrade, 'websocket')
+      t.assert.ok(req.headers['sec-websocket-key'])
+      t.assert.strictEqual(req.headers['sec-websocket-version'], '13')
 
       res.end()
       server.unref()
@@ -23,7 +33,7 @@ test('WebSocket connecting to server that isn\'t a Websocket server', () => {
       ws.onmessage = ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })
@@ -31,7 +41,7 @@ test('WebSocket connecting to server that isn\'t a Websocket server', () => {
   })
 })
 
-test('Open event is emitted', () => {
+test('Open event is emitted', (t) => {
   return new Promise((resolve, reject) => {
     const server = new WebSocketServer({ port: 0 })
 
@@ -42,19 +52,160 @@ test('Open event is emitted', () => {
     const ws = new WebSocket(`ws://localhost:${server.address().port}`)
 
     ws.onmessage = ws.onerror = reject
-    ws.addEventListener('open', () => {
+    ws.addEventListener('open', (t) => {
       server.close()
       resolve()
     })
   })
 })
 
-test('Multiple protocols are joined by a comma', () => {
+test('WebSocket on H2', { skip: crypto == null }, async (t) => {
+  const planner = tspl(t, { plan: 6 })
+  const server = createSecureServer({ cert, key, allowHTTP1: true, settings: { enableConnectProtocol: true } })
+  const wsServer = new WebSocketServer({ noServer: true })
+  server.on('stream', (stream, headers) => {
+    planner.equal(headers[':method'], 'CONNECT')
+    planner.equal(headers[':protocol'], 'websocket')
+    planner.equal(headers[':path'], '/')
+    planner.equal(headers[':scheme'], 'https')
+
+    stream.respond({
+      ':status': 200,
+      'sec-websocket-protocol': headers['sec-websocket-protocol'],
+      'sec-websocket-accept': crypto.hash('sha1', `${headers['sec-websocket-key']}${uid}`, 'base64')
+    })
+    const ws = new WSWebsocket(null, null, { autoPong: true })
+    ws.setSocket(stream, Buffer.alloc(0), {
+      maxPayload: 104857600,
+      skipUTF8Validation: false
+    })
+
+    wsServer.emit('connection', ws, stream)
+  })
+
+  wsServer.on('connection', (ws) => {
+    ws.send('hello')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+
+  const dispatcher = new Agent({
+    allowH2: true,
+    connect: {
+      rejectUnauthorized: false
+    }
+  })
+  const ws = new WebSocket(`wss://localhost:${server.address().port}`, { dispatcher, protocols: ['chat'] })
+
+  t.after(() => {
+    // Cleanup - Seems that due to the nature of H2 we need to remove the error listener
+    // TODO: investigate if this is a bug
+    ws.onerror = null
+    return new Promise((resolve) => {
+      ws.close()
+      server.close()
+      wsServer.close(() => {
+        dispatcher.close().then(resolve)
+      })
+    })
+  })
+
+  ws.onmessage = (evt) => planner.equal(evt.data, 'hello')
+  ws.onerror = (err) => {
+    planner.fail(err)
+  }
+  ws.addEventListener('open', () => planner.ok(true))
+
+  await planner.completed
+})
+
+test('WebSocket connecting to server that isn\'t a Websocket server (h2 - supports extended CONNECT protocol)', async (t) => {
+  const planner = tspl(t, { plan: 6 })
+  const h2Server = createSecureServer({ cert, key, settings: { enableConnectProtocol: true } })
+    .on('stream', (stream, headers) => {
+      planner.equal(headers[':method'], 'CONNECT')
+      planner.equal(headers[':protocol'], 'websocket')
+      planner.ok(headers['sec-websocket-key'])
+      planner.equal(headers['sec-websocket-protocol'], 'chat')
+      planner.equal(headers['sec-websocket-version'], '13')
+
+      stream.respond({ ':status': 200 })
+      stream.close(8) // NGHTTP2_CANCEL
+    })
+    .listen(0)
+
+  await once(h2Server, 'listening')
+
+  const dispatcher = new Agent({
+    allowH2: true,
+    connect: {
+      rejectUnauthorized: false
+    }
+  })
+  const ws = new WebSocket(`wss://localhost:${h2Server.address().port}`, { dispatcher, protocols: ['chat'] })
+  const cleaner = setupListener()
+  ws.onmessage = ws.onopen = () => planner.fail('should not open')
+
+  t.after(() => {
+    cleaner()
+    dispatcher.close()
+    ws.close()
+    h2Server.close()
+  })
+
+  await planner.completed
+
+  function setupListener () {
+    ws.addEventListener('error', listener)
+
+    return () => { ws.removeEventListener('error', listener) }
+
+    function listener ({ error }) {
+      planner.ok(error)
+    }
+  }
+})
+
+test('WebSocket on H2 with a server that does not support extended CONNECT protocol', async (t) => {
+  const planner = tspl(t, { plan: 1 })
+  const h2Server = createSecureServer({ cert, key, settings: { enableConnectProtocol: false } })
+    .on('stream', (stream) => {
+      stream.respond({ ':status': 200 })
+      stream.end('')
+      h2Server.unref()
+    })
+    .listen(0)
+
+  await once(h2Server, 'listening')
+  t.after(() => { h2Server.close() })
+
+  const dispatcher = new Agent({
+    allowH2: true,
+    connect: {
+      rejectUnauthorized: false
+    }
+  })
+  const ws = new WebSocket(`wss://localhost:${h2Server.address().port}`, { dispatcher, protocols: ['chat'] })
+
+  t.after(() => { return ws.close() || dispatcher.close() })
+
+  ws.onmessage = ws.onopen = () => planner.fail('should not open')
+  ws.addEventListener('error', ({ error }) => {
+    planner.ok(error)
+    ws.close()
+    h2Server.close()
+  })
+
+  await planner.completed
+})
+
+test('Multiple protocols are joined by a comma', (t) => {
   return new Promise((resolve, reject) => {
     const server = new WebSocketServer({ port: 0 })
 
     server.on('connection', (ws, req) => {
-      assert.equal(req.headers['sec-websocket-protocol'], 'chat, echo')
+      t.assert.strictEqual(req.headers['sec-websocket-protocol'], 'chat, echo')
 
       ws.close(1000)
       server.close()
@@ -66,9 +217,9 @@ test('Multiple protocols are joined by a comma', () => {
   })
 })
 
-test('Server doesn\'t send Sec-WebSocket-Protocol header when protocols are used', () => {
+test('Server doesn\'t send Sec-WebSocket-Protocol header when protocols are used', (t) => {
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.statusCode = 101
 
       req.socket.destroy()
@@ -78,7 +229,7 @@ test('Server doesn\'t send Sec-WebSocket-Protocol header when protocols are used
       ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })
@@ -86,9 +237,9 @@ test('Server doesn\'t send Sec-WebSocket-Protocol header when protocols are used
   })
 })
 
-test('Server sends invalid Upgrade header', () => {
+test('Server sends invalid Upgrade header', (t) => {
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.setHeader('Upgrade', 'NotWebSocket')
       res.statusCode = 101
 
@@ -99,7 +250,7 @@ test('Server sends invalid Upgrade header', () => {
       ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })
@@ -107,9 +258,9 @@ test('Server sends invalid Upgrade header', () => {
   })
 })
 
-test('Server sends invalid Connection header', () => {
+test('Server sends invalid Connection header', (t) => {
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.setHeader('Upgrade', 'websocket')
       res.setHeader('Connection', 'downgrade')
       res.statusCode = 101
@@ -121,7 +272,7 @@ test('Server sends invalid Connection header', () => {
       ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })
@@ -129,9 +280,9 @@ test('Server sends invalid Connection header', () => {
   })
 })
 
-test('Server sends invalid Sec-WebSocket-Accept header', () => {
+test('Server sends invalid Sec-WebSocket-Accept header', (t) => {
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.setHeader('Upgrade', 'websocket')
       res.setHeader('Connection', 'upgrade')
       res.setHeader('Sec-WebSocket-Accept', 'abc')
@@ -144,7 +295,7 @@ test('Server sends invalid Sec-WebSocket-Accept header', () => {
       ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })
@@ -152,16 +303,15 @@ test('Server sends invalid Sec-WebSocket-Accept header', () => {
   })
 })
 
-test('Server sends invalid Sec-WebSocket-Extensions header', () => {
+test('Server sends invalid Sec-WebSocket-Extensions header', { skip: runtimeFeatures.has('crypto') === false }, (t) => {
   return new Promise((resolve, reject) => {
     const uid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-    const { createHash } = require('node:crypto')
 
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       const key = req.headers['sec-websocket-key']
-      assert.ok(key)
+      t.assert.ok(key)
 
-      const accept = createHash('sha1').update(key + uid).digest('base64')
+      const accept = require('node:crypto').hash('sha1', key + uid, 'base64')
 
       res.setHeader('Upgrade', 'websocket')
       res.setHeader('Connection', 'upgrade')
@@ -176,7 +326,7 @@ test('Server sends invalid Sec-WebSocket-Extensions header', () => {
       ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })
@@ -184,16 +334,15 @@ test('Server sends invalid Sec-WebSocket-Extensions header', () => {
   })
 })
 
-test('Server sends invalid Sec-WebSocket-Extensions header', () => {
+test('Server sends invalid Sec-WebSocket-Extensions header', { skip: runtimeFeatures.has('crypto') === false }, (t) => {
   const uid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
-  const { createHash } = require('node:crypto')
 
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       const key = req.headers['sec-websocket-key']
-      assert.ok(key)
+      t.assert.ok(key)
 
-      const accept = createHash('sha1').update(key + uid).digest('base64')
+      const accept = require('node:crypto').hash('sha1', key + uid, 'base64')
 
       res.setHeader('Upgrade', 'websocket')
       res.setHeader('Connection', 'upgrade')
@@ -208,7 +357,7 @@ test('Server sends invalid Sec-WebSocket-Extensions header', () => {
       ws.onopen = reject
 
       ws.addEventListener('error', ({ error }) => {
-        assert.ok(error)
+        t.assert.ok(error)
         server.close()
         resolve()
       })

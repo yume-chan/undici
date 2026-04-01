@@ -10,7 +10,7 @@ const { Readable } = require('node:stream')
 test('socket close listener does not leak', async (t) => {
   t = tspl(t, { plan: 32 })
 
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
 
   server.on('request', (req, res) => {
     res.end('hello')
@@ -47,6 +47,12 @@ test('socket close listener does not leak', async (t) => {
   await once(server, 'listening')
   const client = new Client(`http://localhost:${server.address().port}`)
   after(() => client.destroy())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   for (let n = 0; n < 16; ++n) {
     client.request({ path: '/', method: 'GET', body: makeBody() }, onRequest)

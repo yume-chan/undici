@@ -11,7 +11,7 @@ const timers = require('../lib/util/timers')
 test('refresh timeout on pause', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.flushHeaders()
   })
   after(() => server.close())
@@ -61,7 +61,7 @@ test('start headers timeout after request body', async (t) => {
     Object.assign(timers, orgTimers)
   })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
   })
   after(() => server.close())
 
@@ -119,7 +119,7 @@ test('start headers timeout after async iterator request body', async (t) => {
     Object.assign(timers, orgTimers)
   })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
   })
   after(() => server.close())
 
@@ -169,7 +169,7 @@ test('start headers timeout after async iterator request body', async (t) => {
 test('parser resume with no body timeout', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end('asd')
   })
   after(() => server.close())
@@ -179,6 +179,12 @@ test('parser resume with no body timeout', async (t) => {
       bodyTimeout: 0
     })
     after(() => client.destroy())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.dispatch({
       path: '/',

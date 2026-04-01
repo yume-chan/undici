@@ -1,60 +1,170 @@
 'use strict'
 
-const { test } = require('node:test')
-const assert = require('node:assert')
-const { createServer } = require('node:http')
 const { once } = require('node:events')
-const { fetch } = require('../..')
-const { createBrotliCompress, createGzip, createDeflate } = require('node:zlib')
-const { closeServerAsPromise } = require('../utils/node-http')
+const { createServer } = require('node:http')
+const { test, before, after, describe } = require('node:test')
+const { fetch, Client } = require('../..')
 
-test('content-encoding header is case-iNsENsITIve', async (t) => {
-  const contentCodings = 'GZiP, bR'
-  const text = 'Hello, World!'
+describe('content-encoding handling', () => {
+  const gzipDeflateText = Buffer.from('H4sIAAAAAAAAA6uY89nj7MmT1wM5zuuf8gxkYZCfx5IFACQ8u/wVAAAA', 'base64')
+  const zstdText = Buffer.from('KLUv/QBYaQAASGVsbG8sIFdvcmxkIQ==', 'base64')
 
-  const server = createServer((req, res) => {
-    const gzip = createGzip()
-    const brotli = createBrotliCompress()
+  let server
+  before(async () => {
+    server = createServer({
+      noDelay: true
+    }, (req, res) => {
+      res.socket.setNoDelay(true)
+      if (
+        req.headers['accept-encoding'] === 'deflate, gzip' ||
+        req.headers['accept-encoding'] === 'DeFlAtE, GzIp'
+      ) {
+        res.writeHead(200,
+          {
+            'Content-Encoding': 'deflate, gzip',
+            'Content-Type': 'text/plain'
+          }
+        )
+        res.flushHeaders()
+        res.end(gzipDeflateText)
+      } else if (req.headers['accept-encoding'] === 'zstd') {
+        res.writeHead(200,
+          {
+            'Content-Encoding': 'zstd',
+            'Content-Type': 'text/plain'
+          }
+        )
+        res.flushHeaders()
+        res.end(zstdText)
+      } else {
+        res.writeHead(200,
+          {
+            'Content-Type': 'text/plain'
+          }
+        )
+        res.flushHeaders()
+        res.end('Hello, World!')
+      }
+    })
+    await once(server.listen(0), 'listening')
+  })
 
-    res.setHeader('Content-Encoding', contentCodings)
-    res.setHeader('Content-Type', 'text/plain')
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
-    gzip.pipe(brotli).pipe(res)
+  test('content-encoding header', async (t) => {
+    const response = await fetch(`http://localhost:${server.address().port}`, {
+      keepalive: false,
+      headers: { 'accept-encoding': 'deflate, gzip' }
+    })
 
-    gzip.write(text)
-    gzip.end()
-  }).listen(0)
+    t.assert.strictEqual(response.headers.get('content-encoding'), 'deflate, gzip')
+    t.assert.strictEqual(response.headers.get('content-type'), 'text/plain')
+    t.assert.strictEqual(await response.text(), 'Hello, World!')
+  })
 
-  t.after(closeServerAsPromise(server))
-  await once(server, 'listening')
+  test('content-encoding header is case-iNsENsITIve', async (t) => {
+    const response = await fetch(`http://localhost:${server.address().port}`, {
+      keepalive: false,
+      headers: { 'accept-encoding': 'DeFlAtE, GzIp' }
+    })
 
-  const response = await fetch(`http://localhost:${server.address().port}`)
+    t.assert.strictEqual(response.headers.get('content-encoding'), 'deflate, gzip')
+    t.assert.strictEqual(response.headers.get('content-type'), 'text/plain')
+    t.assert.strictEqual(await response.text(), 'Hello, World!')
+  })
 
-  assert.strictEqual(await response.text(), text)
-  assert.strictEqual(response.headers.get('content-encoding'), contentCodings)
+  test('should decompress zstandard response',
+    { skip: typeof require('node:zlib').createZstdDecompress !== 'function' },
+    async (t) => {
+      const response = await fetch(`http://localhost:${server.address().port}`, {
+        keepalive: false,
+        headers: { 'accept-encoding': 'zstd' }
+      })
+
+      t.assert.strictEqual(response.headers.get('content-encoding'), 'zstd')
+      t.assert.strictEqual(response.headers.get('content-type'), 'text/plain')
+      t.assert.strictEqual(await response.text(), 'Hello, World!')
+    })
 })
 
-test('response decompression according to content-encoding should be handled in a correct order', async (t) => {
-  const contentCodings = 'deflate, gzip'
-  const text = 'Hello, World!'
+describe('content-encoding chain limit', () => {
+  // CVE fix: Limit the number of content-encodings to prevent resource exhaustion
+  // Similar to urllib3 (GHSA-gm62-xv2j-4w53) and curl (CVE-2022-32206)
+  const MAX_CONTENT_ENCODINGS = 5
 
-  const server = createServer((req, res) => {
-    const gzip = createGzip()
-    const deflate = createDeflate()
+  let server
+  before(async () => {
+    server = createServer({
+      noDelay: true
+    }, (req, res) => {
+      res.socket.setNoDelay(true)
+      const encodingCount = parseInt(req.headers['x-encoding-count'] || '1', 10)
+      const encodings = Array(encodingCount).fill('identity').join(', ')
 
-    res.setHeader('Content-Encoding', contentCodings)
-    res.setHeader('Content-Type', 'text/plain')
+      res.writeHead(200, {
+        'Content-Encoding': encodings,
+        'Content-Type': 'text/plain'
+      })
+      res.flushHeaders()
+      res.end('test')
+    })
+    await once(server.listen(0, '127.0.0.1'), 'listening')
+  })
 
-    deflate.pipe(gzip).pipe(res)
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
-    deflate.write(text)
-    deflate.end()
-  }).listen(0)
+  test(`should allow exactly ${MAX_CONTENT_ENCODINGS} content-encodings`, async (t) => {
+    const client = new Client(`http://127.0.0.1:${server.address().port}`)
+    t.after(() => client.close())
 
-  t.after(closeServerAsPromise(server))
-  await once(server, 'listening')
+    const response = await fetch(`http://127.0.0.1:${server.address().port}`, {
+      dispatcher: client,
+      keepalive: false,
+      headers: { 'x-encoding-count': String(MAX_CONTENT_ENCODINGS) }
+    })
 
-  const response = await fetch(`http://localhost:${server.address().port}`)
+    t.assert.strictEqual(response.status, 200)
+    // identity encoding is a no-op, so the body should be passed through
+    t.assert.strictEqual(await response.text(), 'test')
+  })
 
-  assert.strictEqual(await response.text(), text)
+  test(`should reject more than ${MAX_CONTENT_ENCODINGS} content-encodings`, async (t) => {
+    const client = new Client(`http://127.0.0.1:${server.address().port}`)
+    t.after(() => client.close())
+
+    await t.assert.rejects(
+      fetch(`http://127.0.0.1:${server.address().port}`, {
+        dispatcher: client,
+        keepalive: false,
+        headers: { 'x-encoding-count': String(MAX_CONTENT_ENCODINGS + 1) }
+      }),
+      (err) => {
+        t.assert.ok(err.cause?.message.includes('content-encoding'))
+        return true
+      }
+    )
+  })
+
+  test('should reject excessive content-encoding chains', async (t) => {
+    const client = new Client(`http://127.0.0.1:${server.address().port}`)
+    t.after(() => client.close())
+
+    await t.assert.rejects(
+      fetch(`http://127.0.0.1:${server.address().port}`, {
+        dispatcher: client,
+        keepalive: false,
+        headers: { 'x-encoding-count': '100' }
+      }),
+      (err) => {
+        t.assert.ok(err.cause?.message.includes('content-encoding'))
+        return true
+      }
+    )
+  })
 })

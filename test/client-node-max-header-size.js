@@ -10,7 +10,7 @@ describe("Node.js' --max-http-header-size cli option", () => {
   let server
 
   before(async () => {
-    server = createServer((req, res) => {
+    server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.writeHead(200, 'OK', {
         'Content-Length': 2
       })
@@ -21,7 +21,10 @@ describe("Node.js' --max-http-header-size cli option", () => {
     await once(server, 'listening')
   })
 
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   test("respect Node.js' --max-http-header-size", async (t) => {
     t = tspl(t, { plan: 6 })
@@ -36,7 +39,12 @@ describe("Node.js' --max-http-header-size cli option", () => {
     exec(command, { stdio: 'pipe' }, (err, stdout, stderr) => {
       t.ifError(err)
       t.strictEqual(stdout, '')
-      t.strictEqual(stderr, '', 'default max-http-header-size should not throw')
+      // Filter out debugger messages that may appear when running with --inspect
+      const filteredStderr = stderr.replace(/Debugger listening on ws:\/\/.*?\n/g, '')
+        .replace(/For help, see:.*?\n/g, '')
+        .replace(/Debugger attached\.\n/g, '')
+        .replace(/Waiting for the debugger to disconnect\.\.\.\n/g, '')
+      t.strictEqual(filteredStderr, '', 'default max-http-header-size should not throw')
     })
 
     await t.completed
@@ -55,7 +63,12 @@ describe("Node.js' --max-http-header-size cli option", () => {
     exec(command, { stdio: 'pipe' }, (err, stdout, stderr) => {
       t.ifError(err)
       t.strictEqual(stdout, '')
-      t.strictEqual(stderr, '', 'default max-http-header-size should not throw')
+      // Filter out debugger messages that may appear when running with --inspect
+      const filteredStderr = stderr.replace(/Debugger listening on ws:\/\/.*?\n/g, '')
+        .replace(/For help, see:.*?\n/g, '')
+        .replace(/Debugger attached\.\n/g, '')
+        .replace(/Waiting for the debugger to disconnect\.\.\.\n/g, '')
+      t.strictEqual(filteredStderr, '', 'default max-http-header-size should not throw')
     })
 
     await t.completed

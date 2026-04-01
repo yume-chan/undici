@@ -21,6 +21,16 @@ expectAssignable<CacheInterceptor.CacheOptions>({ store })
 expectAssignable<CacheInterceptor.CacheOptions>({ methods: [] })
 expectAssignable<CacheInterceptor.CacheOptions>({ store, methods: ['GET'] })
 
+// origins option type tests
+expectAssignable<CacheInterceptor.CacheOptions>({ origins: undefined })
+expectAssignable<CacheInterceptor.CacheOptions>({ origins: [] })
+expectAssignable<CacheInterceptor.CacheOptions>({ origins: ['http://localhost'] })
+expectAssignable<CacheInterceptor.CacheOptions>({ origins: [/localhost/] })
+expectAssignable<CacheInterceptor.CacheOptions>({ origins: ['http://example.com', /localhost/] })
+expectNotAssignable<CacheInterceptor.CacheOptions>({ origins: 'http://localhost' })
+expectNotAssignable<CacheInterceptor.CacheOptions>({ origins: [123] })
+expectNotAssignable<CacheInterceptor.CacheOptions>({ origins: [null] })
+
 expectAssignable<CacheInterceptor.CacheValue>({
   statusCode: 200,
   statusMessage: 'OK',
@@ -76,6 +86,45 @@ expectNotAssignable<CacheInterceptor.CacheValue>({
   cachedAt: '',
   staleAt: '',
   deleteAt: ''
+})
+
+expectAssignable<CacheInterceptor.CacheValue>({
+  statusCode: 200,
+  statusMessage: 'OK',
+  headers: {},
+  vary: {
+    'accept-encoding': null,
+    authorization: 'example-value'
+  },
+  cachedAt: 0,
+  staleAt: 0,
+  deleteAt: 0
+})
+
+expectAssignable<CacheInterceptor.CacheValue>({
+  statusCode: 200,
+  statusMessage: 'OK',
+  headers: {},
+  vary: {
+    'accept-encoding': null,
+    authorization: null
+  },
+  cachedAt: 0,
+  staleAt: 0,
+  deleteAt: 0
+})
+
+expectNotAssignable<CacheInterceptor.CacheValue>({
+  statusCode: 200,
+  statusMessage: 'OK',
+  headers: {},
+  vary: {
+    'accept-encoding': undefined,
+    authorization: 'example-value'
+  },
+  cachedAt: 0,
+  staleAt: 0,
+  deleteAt: 0
 })
 
 expectAssignable<CacheInterceptor.MemoryCacheStoreOpts>({})

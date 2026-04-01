@@ -10,7 +10,7 @@ const { Readable } = require('node:stream')
 test('request timeout with slow readable body', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let str = ''
     for await (const x of req) {
       str += x
@@ -24,6 +24,12 @@ test('request timeout with slow readable body', async (t) => {
   await once(server, 'listening')
   const client = new Client(`http://localhost:${server.address().port}`, { headersTimeout: 50 })
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   const body = new Readable({
     read () {

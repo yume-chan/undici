@@ -10,16 +10,18 @@ const FakeTimers = require('@sinonjs/fake-timers')
  * @typedef {import('../../types/cache-interceptor.d.ts').default.CacheStore} CacheStore
  *
  * @param {{ new(...any): CacheStore }} CacheStore
+ * @param {object} [options]
+ * @param {boolean} [options.skip]
  */
-function cacheStoreTests (CacheStore) {
+function cacheStoreTests (CacheStore, options) {
   describe(CacheStore.prototype.constructor.name, () => {
-    test('matches interface', () => {
+    test('matches interface', options, () => {
       equal(typeof CacheStore.prototype.get, 'function')
       equal(typeof CacheStore.prototype.createWriteStream, 'function')
       equal(typeof CacheStore.prototype.delete, 'function')
     })
 
-    test('caches request', async () => {
+    test('caches request', options, async () => {
       /**
        * @type {import('../../types/cache-interceptor.d.ts').default.CacheKey}
        */
@@ -106,7 +108,7 @@ function cacheStoreTests (CacheStore) {
       }
     })
 
-    test('returns stale response before deleteAt', async () => {
+    test('returns stale response before deleteAt', options, async () => {
       const clock = FakeTimers.install({
         shouldClearNativeTimers: true
       })
@@ -164,7 +166,88 @@ function cacheStoreTests (CacheStore) {
       equal(await store.get(key), undefined)
     })
 
-    test('vary directives used to decide which response to use', async () => {
+    test('a stale request is overwritten', options, async () => {
+      const clock = FakeTimers.install({
+        shouldClearNativeTimers: true
+      })
+
+      after(() => clock.uninstall())
+
+      /**
+       * @type {import('../../types/cache-interceptor.d.ts').default.CacheKey}
+       */
+      const key = {
+        origin: 'localhost',
+        path: '/',
+        method: 'GET',
+        headers: {}
+      }
+
+      /**
+       * @type {import('../../types/cache-interceptor.d.ts').default.CacheValue}
+       */
+      const value = {
+        statusCode: 200,
+        statusMessage: '',
+        headers: { foo: 'bar' },
+        cacheControlDirectives: {},
+        cachedAt: Date.now(),
+        staleAt: Date.now() + 1000,
+        // deleteAt is different because stale-while-revalidate, stale-if-error, ...
+        deleteAt: Date.now() + 5000
+      }
+
+      const body = [Buffer.from('asd'), Buffer.from('123')]
+
+      const store = new CacheStore()
+
+      // Sanity check
+      equal(store.get(key), undefined)
+
+      {
+        const writable = store.createWriteStream(key, value)
+        notEqual(writable, undefined)
+        writeBody(writable, body)
+      }
+
+      clock.tick(1500)
+
+      {
+        const result = await store.get(structuredClone(key))
+        notEqual(result, undefined)
+        await compareGetResults(result, value, body)
+      }
+
+      /**
+       * @type {import('../../types/cache-interceptor.d.ts').default.CacheValue}
+       */
+      const value2 = {
+        statusCode: 200,
+        statusMessage: '',
+        headers: { foo: 'baz' },
+        cacheControlDirectives: {},
+        cachedAt: Date.now(),
+        staleAt: Date.now() + 1000,
+        // deleteAt is different because stale-while-revalidate, stale-if-error, ...
+        deleteAt: Date.now() + 5000
+      }
+
+      const body2 = [Buffer.from('foo'), Buffer.from('123')]
+
+      {
+        const writable = store.createWriteStream(key, value2)
+        notEqual(writable, undefined)
+        writeBody(writable, body2)
+      }
+
+      {
+        const result = await store.get(structuredClone(key))
+        notEqual(result, undefined)
+        await compareGetResults(result, value2, body2)
+      }
+    })
+
+    test('vary directives used to decide which response to use', options, async () => {
       /**
        * @type {import('../../types/cache-interceptor.d.ts').default.CacheKey}
        */

@@ -4,12 +4,12 @@ const { tspl } = require('@matteo.collina/tspl')
 const { test, after } = require('node:test')
 const { Client } = require('..')
 const { createServer } = require('node:https')
-const pem = require('https-pem')
+const pem = require('@metcoder95/https-pem')
 
 test('https get with tls opts', async (t) => {
   t = tspl(t, { plan: 6 })
 
-  const server = createServer(pem, (req, res) => {
+  const server = createServer({ ...pem, joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual('/', req.url)
     t.strictEqual('GET', req.method)
     res.setHeader('content-type', 'text/plain')
@@ -24,6 +24,12 @@ test('https get with tls opts', async (t) => {
       }
     })
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({ path: '/', method: 'GET' }, (err, { statusCode, headers, body }) => {
       t.ifError(err)
@@ -45,7 +51,7 @@ test('https get with tls opts', async (t) => {
 test('https get with tls opts ip', async (t) => {
   t = tspl(t, { plan: 6 })
 
-  const server = createServer(pem, (req, res) => {
+  const server = createServer({ ...pem, joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual('/', req.url)
     t.strictEqual('GET', req.method)
     res.setHeader('content-type', 'text/plain')
@@ -60,6 +66,12 @@ test('https get with tls opts ip', async (t) => {
       }
     })
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({ path: '/', method: 'GET' }, (err, { statusCode, headers, body }) => {
       t.ifError(err)

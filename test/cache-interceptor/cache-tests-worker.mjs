@@ -6,6 +6,7 @@ import { getResults, runTests as runTestSuite } from '../fixtures/cache-tests/te
 import { determineTestResult, testLookup } from '../fixtures/cache-tests/test-engine/lib/results.mjs'
 import tests from '../fixtures/cache-tests/tests/index.mjs'
 import { Agent, fetch, interceptors, setGlobalDispatcher } from '../../index.js'
+import { runtimeFeatures } from '../../lib/util/runtime-features.js'
 import MemoryCacheStore from '../../lib/cache/memory-cache-store.js'
 
 if (!process.env.TEST_ENVIRONMENT) {
@@ -50,8 +51,10 @@ if (environment.ignoredTests) {
 const client = new Agent().compose(interceptors.cache(environment.opts))
 setGlobalDispatcher(client)
 
+globalThis.fetch = fetch
+
 // Run the suite
-await runTestSuite(tests, fetch, true, process.env.BASE_URL)
+await runTestSuite(tests, true, process.env.BASE_URL)
 
 let exitCode = 0
 
@@ -70,13 +73,9 @@ async function makeCacheStore (type) {
     MemoryCacheStore
   }
 
-  try {
-    await import('node:sqlite')
-
+  if (runtimeFeatures.has('sqlite')) {
     const { default: SqliteCacheStore } = await import('../../lib/cache/sqlite-cache-store.js')
     stores.SqliteCacheStore = SqliteCacheStore
-  } catch (err) {
-    // Do nothing
   }
 
   const Store = stores[type]
@@ -206,6 +205,10 @@ function printStats (stats) {
     dependencyFailed,
     retried
   } = stats
+
+  if (total < 0) {
+    throw new Error('Total tests cannot be negative')
+  }
 
   console.log(`\n        Total tests: ${total}`)
   console.log(`            ${styleText('gray', 'Skipped')}: ${skipped} (${((skipped / total) * 100).toFixed(1)}%)`)

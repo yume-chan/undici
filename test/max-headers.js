@@ -14,7 +14,7 @@ test('handle a lot of headers', async (t) => {
     headers[n] = String(n)
   }
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeHead(200, headers)
     res.end()
   })
@@ -24,6 +24,12 @@ test('handle a lot of headers', async (t) => {
   await once(server, 'listening')
   const client = new Client(`http://localhost:${server.address().port}`)
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   client.request({
     path: '/',

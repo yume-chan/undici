@@ -9,7 +9,7 @@ const { createServer } = require('node:http')
 test('CRLF Injection in Nodejs ‘undici’ via host', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     res.end()
   })
   after(() => server.close())
@@ -20,6 +20,12 @@ test('CRLF Injection in Nodejs ‘undici’ via host', async (t) => {
 
   const client = new Client(`http://localhost:${server.address().port}`)
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   const unsanitizedContentTypeInput = '12 \r\n\r\naaa:aaa'
 

@@ -4,15 +4,15 @@ const { tspl } = require('@matteo.collina/tspl')
 const { test, after, mock } = require('node:test')
 const { Client } = require('..')
 const { createServer } = require('node:https')
-const pem = require('https-pem')
+const pem = require('@metcoder95/https-pem')
 const tls = require('node:tls')
 
 test('custom session passed to client will be used in tls connect call', async (t) => {
-  t = tspl(t, { plan: 4 })
+  t = tspl(t, { plan: 6 })
 
   const mockConnect = mock.method(tls, 'connect')
 
-  const server = createServer(pem, (req, res) => {
+  const server = createServer({ ...pem, joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual('/', req.url)
     t.strictEqual('GET', req.method)
     res.setHeader('content-type', 'text/plain')
@@ -30,6 +30,12 @@ test('custom session passed to client will be used in tls connect call', async (
       }
     })
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     const { statusCode, headers, body } = await client.request({
       path: '/',

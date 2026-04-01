@@ -1,7 +1,7 @@
 import { expectAssignable } from 'tsd'
 import { Client, buildConnector } from '../..'
-import { TLSSocket } from 'tls'
-import { Socket } from 'net'
+import { TLSSocket } from 'node:tls'
+import { Socket } from 'node:net'
 
 const connector = buildConnector({ rejectUnauthorized: false, allowH2: false })
 expectAssignable<Client>(new Client('', {
@@ -33,5 +33,6 @@ expectAssignable<buildConnector.Options>({
   hostname: 'example.com',
   port: '',
   localAddress: '127.0.0.1',
+  socketPath: '/var/run/undici.sock',
   httpSocket: new Socket()
 })

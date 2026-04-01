@@ -4,10 +4,9 @@ const { once } = require('node:events')
 const { createServer } = require('node:http')
 const { test } = require('node:test')
 const { Agent, Request, fetch } = require('../..')
-const { tspl } = require('@matteo.collina/tspl')
 
 test('issue #2828, dispatcher is allowed in RequestInit options', async (t) => {
-  const { deepStrictEqual } = tspl(t, { plan: 1 })
+  t.plan(1)
 
   class CustomAgent extends Agent {
     dispatch (options, handler) {
@@ -16,8 +15,8 @@ test('issue #2828, dispatcher is allowed in RequestInit options', async (t) => {
     }
   }
 
-  const server = createServer((req, res) => {
-    deepStrictEqual(req.headers['x-my-header'], 'hello')
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    t.assert.deepStrictEqual(req.headers['x-my-header'], 'hello')
     res.end()
   }).listen(0)
 

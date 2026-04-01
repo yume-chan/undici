@@ -2,7 +2,7 @@
 
 const { describe, test } = require('node:test')
 const assert = require('node:assert')
-const { webidl } = require('../../lib/web/fetch/webidl')
+const { webidl } = require('../../lib/web/webidl')
 
 test('sequence', () => {
   const converter = webidl.sequenceConverter(
@@ -121,84 +121,298 @@ describe('webidl.dictionaryConverter', () => {
     assert.deepStrictEqual(dict(obj), { key: 1 })
     assert.deepStrictEqual(dict(obj2), { key: 1 })
   })
-})
 
-test('ArrayBuffer', () => {
-  assert.throws(() => {
-    webidl.converters.ArrayBuffer(true, 'converter', 'converter')
-  }, TypeError)
-
-  assert.throws(() => {
-    webidl.converters.ArrayBuffer({}, 'converter', 'converter')
-  }, TypeError)
-
-  assert.throws(() => {
-    const sab = new SharedArrayBuffer(1024)
-    webidl.converters.ArrayBuffer(sab, 'converter', 'converter', { allowShared: false })
-  }, TypeError)
-
-  assert.doesNotThrow(() => {
-    const sab = new SharedArrayBuffer(1024)
-    webidl.converters.ArrayBuffer(sab, 'converter', 'converter')
-  })
-
-  assert.doesNotThrow(() => {
-    const ab = new ArrayBuffer(8)
-    webidl.converters.ArrayBuffer(ab, 'converter', 'converter')
-  })
-})
-
-test('TypedArray', () => {
-  assert.throws(() => {
-    webidl.converters.TypedArray(3, 'converter', 'converter')
-  }, TypeError)
-
-  assert.throws(() => {
-    webidl.converters.TypedArray({}, 'converter', 'converter')
-  }, TypeError)
-
-  assert.throws(() => {
-    const uint8 = new Uint8Array([1, 2, 3])
-    Object.defineProperty(uint8, 'buffer', {
-      get () {
-        return new SharedArrayBuffer(8)
+  test('keys are accessed in lexicographical order', () => {
+    const converter = webidl.dictionaryConverter([
+      {
+        converter: () => true,
+        key: 'zyx'
+      },
+      {
+        converter: () => true,
+        key: 'abc'
       }
-    })
+    ])
 
-    webidl.converters.TypedArray(uint8, Uint8Array, 'converter', 'converter', {
-      allowShared: false
-    })
-  }, TypeError)
+    const accessed = []
+
+    converter({
+      get abc () {
+        return accessed.push('abc')
+      },
+      get zyx () {
+        return accessed.push('zyx')
+      }
+    }, 'converter', 'converter')
+
+    assert.deepStrictEqual(accessed, ['abc', 'zyx'])
+  })
 })
 
-test('DataView', () => {
-  assert.throws(() => {
-    webidl.converters.DataView(3, 'converter', 'converter')
-  }, TypeError)
+describe('buffer source converters', () => {
+  test('ArrayBuffer', () => {
+    assert.throws(() => {
+      webidl.converters.ArrayBuffer(true, 'converter', 'converter')
+    }, TypeError)
 
-  assert.throws(() => {
-    webidl.converters.DataView({}, 'converter', 'converter')
-  }, TypeError)
+    assert.throws(() => {
+      webidl.converters.ArrayBuffer({}, 'converter', 'converter')
+    }, TypeError)
 
-  assert.throws(() => {
-    const buffer = new ArrayBuffer(16)
-    const view = new DataView(buffer, 0)
-
-    Object.defineProperty(view, 'buffer', {
-      get () {
-        return new SharedArrayBuffer(8)
-      }
+    assert.doesNotThrow(() => {
+      webidl.converters.ArrayBuffer(new ArrayBuffer(8), 'converter', 'converter')
     })
 
-    webidl.converters.DataView(view, 'converter', 'converter', {
-      allowShared: false
+    assert.throws(() => {
+      webidl.converters.ArrayBuffer(new SharedArrayBuffer(64), 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.ArrayBuffer(
+        new ArrayBuffer(16, { maxByteLength: 64 }),
+        'converter',
+        'converter'
+      )
+    })
+
+    assert.doesNotThrow(() => {
+      webidl.converters.ArrayBuffer(
+        new ArrayBuffer(16, { maxByteLength: 64 }),
+        'converter',
+        'converter',
+        webidl.attributes.AllowResizable
+      )
     })
   })
 
-  const buffer = new ArrayBuffer(16)
-  const view = new DataView(buffer, 0)
+  test('SharedArrayBuffer', () => {
+    assert.throws(() => {
+      webidl.converters.SharedArrayBuffer(true, 'converter', 'converter')
+    }, TypeError)
 
-  assert.equal(webidl.converters.DataView(view, 'converter', 'converter'), view)
+    assert.throws(() => {
+      webidl.converters.SharedArrayBuffer({}, 'converter', 'converter')
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.SharedArrayBuffer(new SharedArrayBuffer(8), 'converter', 'converter')
+    })
+
+    assert.throws(() => {
+      webidl.converters.SharedArrayBuffer(new ArrayBuffer(64), 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.SharedArrayBuffer(
+        new SharedArrayBuffer(16, { maxByteLength: 64 }),
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.SharedArrayBuffer(
+        new SharedArrayBuffer(16, { maxByteLength: 64 }),
+        'converter',
+        'converter',
+        webidl.attributes.AllowResizable
+      )
+    })
+  })
+
+  test('TypedArray', () => {
+    assert.throws(() => {
+      webidl.converters.TypedArray(3, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.TypedArray({}, 'converter', 'converter')
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.TypedArray(new Uint8Array(), Uint8Array, 'converter', 'converter')
+    })
+
+    assert.throws(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new SharedArrayBuffer(16)),
+        Uint8Array,
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new SharedArrayBuffer(16)),
+        Uint8Array,
+        'converter',
+        'converter',
+        webidl.attributes.AllowShared
+      )
+    })
+
+    assert.throws(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new ArrayBuffer(16, { maxByteLength: 32 })),
+        Uint8Array,
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new ArrayBuffer(16, { maxByteLength: 32 })),
+        Uint8Array,
+        'converter',
+        'converter',
+        webidl.attributes.AllowResizable
+      )
+    })
+
+    assert.throws(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new SharedArrayBuffer(16, { maxByteLength: 32 })),
+        Uint8Array,
+        'converter',
+        'converter',
+        webidl.attributes.AllowResizable
+      )
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new SharedArrayBuffer(16, { maxByteLength: 32 })),
+        Uint8Array,
+        'converter',
+        'converter',
+        webidl.attributes.AllowShared
+      )
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.TypedArray(
+        new Uint8Array(new SharedArrayBuffer(16, { maxByteLength: 32 })),
+        Uint8Array,
+        'converter',
+        'converter',
+        webidl.attributes.AllowResizable | webidl.attributes.AllowShared
+      )
+    })
+  })
+
+  test('DataView', () => {
+    assert.throws(() => {
+      webidl.converters.DataView(3, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.DataView({}, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.DataView(new Uint8Array(), 'converter', 'converter')
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.DataView(new DataView(new ArrayBuffer(8)), 'converter', 'converter')
+    })
+
+    assert.throws(() => {
+      webidl.converters.DataView(
+        new DataView(new SharedArrayBuffer(16)),
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.DataView(
+        new DataView(new ArrayBuffer(16, { maxByteLength: 64 })),
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+  })
+
+  test('ArrayBufferView', () => {
+    assert.throws(() => {
+      webidl.converters.ArrayBufferView(3, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.ArrayBufferView({}, 'converter', 'converter')
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.ArrayBufferView(new Uint8Array(), 'converter', 'converter')
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.ArrayBufferView(new DataView(new ArrayBuffer(8)), 'converter', 'converter')
+    })
+
+    assert.throws(() => {
+      webidl.converters.ArrayBufferView(
+        new Uint8Array(new SharedArrayBuffer(16)),
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.ArrayBufferView(
+        new Float32Array(new ArrayBuffer(16, { maxByteLength: 64 })),
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+  })
+
+  test('BufferSource', () => {
+    assert.throws(() => {
+      webidl.converters.BufferSource(3, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.BufferSource({}, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.BufferSource(new SharedArrayBuffer(16), 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.BufferSource(
+        new Uint8Array(new SharedArrayBuffer(16)),
+        'converter',
+        'converter'
+      )
+    }, TypeError)
+  })
+
+  test('AllowSharedBufferSource', () => {
+    assert.throws(() => {
+      webidl.converters.AllowSharedBufferSource(3, 'converter', 'converter')
+    }, TypeError)
+
+    assert.throws(() => {
+      webidl.converters.AllowSharedBufferSource({}, 'converter', 'converter')
+    }, TypeError)
+
+    assert.doesNotThrow(() => {
+      webidl.converters.AllowSharedBufferSource(new SharedArrayBuffer(16), 'converter', 'converter')
+    })
+
+    assert.doesNotThrow(() => {
+      webidl.converters.AllowSharedBufferSource(
+        new Uint8Array(new SharedArrayBuffer(16)),
+        'converter',
+        'converter'
+      )
+    })
+  })
 })
 
 test('ByteString', () => {
@@ -216,29 +430,6 @@ test('ByteString', () => {
   })
 })
 
-test('webidl.util.Stringify', (t) => {
-  const circular = {}
-  circular.circular = circular
-
-  const pairs = [
-    [Object.create(null), '[Object: null prototype] {}'],
-    [{ a: 'b' }, "{ a: 'b' }"],
-    [Symbol('sym'), 'Symbol(sym)'],
-    [Symbol.iterator, 'Symbol(Symbol.iterator)'], // well-known symbol
-    [true, 'true'],
-    [0, '0'],
-    ['hello', '"hello"'],
-    ['', '""'],
-    [null, 'null'],
-    [undefined, 'undefined'],
-    [circular, '<ref *1> { circular: [Circular *1] }']
-  ]
-
-  for (const [value, expected] of pairs) {
-    assert.deepStrictEqual(webidl.util.Stringify(value), expected)
-  }
-})
-
 test('recordConverter', () => {
   const anyConverter = webidl.recordConverter(webidl.converters.any, webidl.converters.any)
 
@@ -246,4 +437,35 @@ test('recordConverter', () => {
     () => anyConverter(null, 'prefix', 'argument'),
     new TypeError('prefix: argument ("Null") is not an Object.')
   )
+})
+
+test('webidl.converters.boolean', () => {
+  assert.strictEqual(webidl.converters.boolean(null), false)
+  assert.strictEqual(webidl.converters.boolean(undefined), false)
+
+  assert.strictEqual(webidl.converters.boolean(true), true)
+  assert.strictEqual(webidl.converters.boolean(false), false)
+
+  assert.strictEqual(webidl.converters.boolean(''), false)
+  assert.strictEqual(webidl.converters.boolean('true'), true)
+  assert.strictEqual(webidl.converters.boolean('false'), true)
+
+  assert.strictEqual(webidl.converters.boolean(1), true)
+  assert.strictEqual(webidl.converters.boolean(0), false)
+  assert.strictEqual(webidl.converters.boolean(-0), false)
+  assert.strictEqual(webidl.converters.boolean(NaN), false)
+  assert.strictEqual(webidl.converters.boolean(Infinity), true)
+  assert.strictEqual(webidl.converters.boolean(-Infinity), true)
+
+  assert.strictEqual(webidl.converters.boolean(0n), false)
+  assert.strictEqual(webidl.converters.boolean(1n), true)
+
+  assert.strictEqual(webidl.converters.boolean({}), true)
+  assert.strictEqual(webidl.converters.boolean([]), true)
+  assert.strictEqual(webidl.converters.boolean(() => {}), true)
+  assert.strictEqual(webidl.converters.boolean(/a/), true)
+  assert.strictEqual(webidl.converters.boolean(new Date()), true)
+  assert.strictEqual(webidl.converters.boolean(new Map()), true)
+  assert.strictEqual(webidl.converters.boolean(new Set()), true)
+  assert.strictEqual(webidl.converters.boolean(new Date()), true)
 })

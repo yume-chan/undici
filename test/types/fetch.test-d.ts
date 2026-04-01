@@ -1,6 +1,6 @@
-import { URL } from 'url'
-import { Blob } from 'buffer'
-import { ReadableStream } from 'stream/web'
+import { URL } from 'node:url'
+import { Blob } from 'node:buffer'
+import { ReadableStream } from 'node:stream/web'
 import { expectType, expectError, expectAssignable, expectNotAssignable } from 'tsd'
 import {
   Agent,
@@ -174,6 +174,7 @@ expectType<boolean>(response.bodyUsed)
 expectType<Promise<ArrayBuffer>>(response.arrayBuffer())
 expectType<Promise<Blob>>(response.blob())
 expectType<Promise<FormData>>(response.formData())
+expectType<Promise<Uint8Array>>(response.bytes())
 expectType<Promise<unknown>>(response.json())
 expectType<Promise<string>>(response.text())
 expectType<Response>(response.clone())

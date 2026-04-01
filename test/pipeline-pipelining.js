@@ -10,7 +10,7 @@ const { kBusy, kPending, kRunning } = require('../lib/core/symbols')
 test('pipeline pipelining', async (t) => {
   t = tspl(t, { plan: 10 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     t.deepStrictEqual(req.headers['transfer-encoding'], undefined)
     res.end()
   })
@@ -21,6 +21,12 @@ test('pipeline pipelining', async (t) => {
       pipelining: 2
     })
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client[kConnect](() => {
       t.equal(client[kRunning], 0)
@@ -54,7 +60,7 @@ test('pipeline pipelining retry', async (t) => {
   t = tspl(t, { plan: 13 })
 
   let count = 0
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     if (count++ === 0) {
       res.destroy()
     } else {

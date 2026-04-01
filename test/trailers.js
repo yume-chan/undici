@@ -8,7 +8,7 @@ const { createServer } = require('node:http')
 test('response trailers missing is OK', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeHead(200, {
       Trailer: 'content-length'
     })
@@ -18,6 +18,13 @@ test('response trailers missing is OK', async (t) => {
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.destroy())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
+
     const { body } = await client.request({
       path: '/',
       method: 'GET',
@@ -33,7 +40,7 @@ test('response trailers missing is OK', async (t) => {
 test('response trailers missing w trailers is OK', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeHead(200, {
       Trailer: 'content-length'
     })
@@ -46,6 +53,13 @@ test('response trailers missing w trailers is OK', async (t) => {
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.destroy())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
+
     const { body, trailers } = await client.request({
       path: '/',
       method: 'GET',

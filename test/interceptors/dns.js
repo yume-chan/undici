@@ -9,13 +9,13 @@ const { createServer: createSecureServer } = require('node:https')
 const { once } = require('node:events')
 
 const { tspl } = require('@matteo.collina/tspl')
-const pem = require('https-pem')
+const pem = require('@metcoder95/https-pem')
 
-const { interceptors, Agent } = require('../..')
+const { interceptors, Agent, request } = require('../..')
 const { dns } = interceptors
 
 test('Should validate options', t => {
-  t = tspl(t, { plan: 10 })
+  t = tspl(t, { plan: 11 })
 
   t.throws(() => dns({ dualStack: 'true' }), { code: 'UND_ERR_INVALID_ARG' })
   t.throws(() => dns({ dualStack: 0 }), { code: 'UND_ERR_INVALID_ARG' })
@@ -27,13 +27,14 @@ test('Should validate options', t => {
   t.throws(() => dns({ maxItems: -1 }), { code: 'UND_ERR_INVALID_ARG' })
   t.throws(() => dns({ lookup: {} }), { code: 'UND_ERR_INVALID_ARG' })
   t.throws(() => dns({ pick: [] }), { code: 'UND_ERR_INVALID_ARG' })
+  t.throws(() => dns({ storage: new Map() }), { code: 'UND_ERR_INVALID_ARG' })
 })
 
 test('Should automatically resolve IPs (dual stack)', async t => {
   t = tspl(t, { plan: 8 })
 
   const hostsnames = []
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -198,10 +199,10 @@ test('Should respect DNS origin hostname for SNI on TLS', async t => {
 })
 
 test('Should recover on network errors (dual stack - 4)', async t => {
-  t = tspl(t, { plan: 8 })
+  t = tspl(t, { plan: 7 })
 
   let counter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -236,11 +237,6 @@ test('Should recover on network errors (dual stack - 4)', async t => {
             break
 
           case 3:
-            // [::1] -> ::1
-            t.equal(isIP(url.hostname), 4)
-            break
-
-          case 4:
             // [::1] -> ::1
             t.equal(isIP(url.hostname.slice(1, 4)), 6)
             break
@@ -295,7 +291,7 @@ test('Should recover on network errors (dual stack - 6)', async t => {
   t = tspl(t, { plan: 7 })
 
   let counter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -420,7 +416,7 @@ test('Should throw when on dual-stack disabled (4)', async t => {
 
   await t.rejects(promise, 'ECONNREFUSED')
 
-  await t.complete
+  await t.completed
 })
 
 test('Should throw when on dual-stack disabled (6)', async t => {
@@ -464,14 +460,14 @@ test('Should throw when on dual-stack disabled (6)', async t => {
 
   await t.rejects(promise, 'ECONNREFUSED')
 
-  await t.complete
+  await t.completed
 })
 
 test('Should automatically resolve IPs (dual stack disabled - 4)', async t => {
   t = tspl(t, { plan: 6 })
 
   let counter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -542,7 +538,7 @@ test('Should automatically resolve IPs (dual stack disabled - 6)', async t => {
   t = tspl(t, { plan: 6 })
 
   let counter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -616,7 +612,7 @@ test('Should we handle TTL (4)', async t => {
   const clock = FakeTimers.install()
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -719,7 +715,7 @@ test('Should we handle TTL (6)', async t => {
   const clock = FakeTimers.install()
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -823,7 +819,7 @@ test('Should set lowest TTL between resolved and option maxTTL', async t => {
 
   const clock = FakeTimers.install()
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -916,7 +912,7 @@ test('Should use all dns entries (dual stack)', async t => {
 
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1006,7 +1002,7 @@ test('Should use all dns entries (dual stack disabled - 4)', async t => {
 
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1102,7 +1098,7 @@ test('Should use all dns entries (dual stack disabled - 6)', async t => {
 
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1200,7 +1196,7 @@ test('Should handle single family resolved (dual stack)', async t => {
   const clock = FakeTimers.install()
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1291,7 +1287,7 @@ test('Should prefer affinity (dual stack - 4)', async t => {
   const clock = FakeTimers.install()
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1393,7 +1389,7 @@ test('Should prefer affinity (dual stack - 6)', async t => {
   const clock = FakeTimers.install()
   let counter = 0
   let lookupCounter = 0
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1493,8 +1489,8 @@ test('Should use resolved ports (4)', async t => {
   t = tspl(t, { plan: 5 })
 
   let lookupCounter = 0
-  const server1 = createServer()
-  const server2 = createServer()
+  const server1 = createServer({ joinDuplicateHeaders: true })
+  const server2 = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1561,8 +1557,8 @@ test('Should use resolved ports (6)', async t => {
   t = tspl(t, { plan: 5 })
 
   let lookupCounter = 0
-  const server1 = createServer()
-  const server2 = createServer()
+  const server1 = createServer({ joinDuplicateHeaders: true })
+  const server2 = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1629,8 +1625,8 @@ test('Should handle max cached items', async t => {
   t = tspl(t, { plan: 9 })
 
   let counter = 0
-  const server1 = createServer()
-  const server2 = createServer()
+  const server1 = createServer({ joinDuplicateHeaders: true })
+  const server2 = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1732,6 +1728,181 @@ test('Should handle max cached items', async t => {
   t.equal(await response3.body.text(), 'hello world! (x2)')
 })
 
+test('Should support external storage', async t => {
+  t = tspl(t, { plan: 9 })
+
+  let counter = 0
+  const server1 = createServer({ joinDuplicateHeaders: true })
+  const server2 = createServer({ joinDuplicateHeaders: true })
+  const requestOptions = {
+    method: 'GET',
+    path: '/',
+    headers: {
+      'content-type': 'application/json'
+    }
+  }
+
+  server1.on('request', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('hello world!')
+  })
+
+  server1.listen(0)
+
+  server2.on('request', (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('hello world! (x2)')
+  })
+  server2.listen(0)
+
+  await Promise.all([once(server1, 'listening'), once(server2, 'listening')])
+
+  const cache = new Map()
+  const storage = {
+    get (origin) {
+      return cache.get(origin)
+    },
+    set (origin, records) {
+      cache.set(origin, records)
+    },
+    delete (origin) {
+      cache.delete(origin)
+    },
+    // simulate internal DNSStorage behaviour with `maxItems: 1` parameter
+    full () {
+      return cache.size === 1
+    }
+  }
+
+  const client = new Agent().compose([
+    dispatch => {
+      return (opts, handler) => {
+        ++counter
+        const url = new URL(opts.origin)
+
+        switch (counter) {
+          case 1:
+            t.equal(isIP(url.hostname), 4)
+            break
+
+          case 2:
+            // [::1] -> ::1
+            t.equal(isIP(url.hostname.slice(1, 4)), 6)
+            break
+
+          case 3:
+            t.equal(url.hostname, 'developer.mozilla.org')
+            // Rewrite origin to avoid reaching internet
+            opts.origin = `http://127.0.0.1:${server2.address().port}`
+            break
+          default:
+            t.fails('should not reach this point')
+        }
+
+        return dispatch(opts, handler)
+      }
+    },
+    dns({
+      storage,
+      lookup: (_origin, _opts, cb) => {
+        cb(null, [
+          {
+            address: '::1',
+            family: 6
+          },
+          {
+            address: '127.0.0.1',
+            family: 4
+          }
+        ])
+      }
+    })
+  ])
+
+  after(async () => {
+    await client.close()
+    server1.close()
+    server2.close()
+
+    await Promise.all([once(server1, 'close'), once(server2, 'close')])
+  })
+
+  const response = await client.request({
+    ...requestOptions,
+    origin: `http://localhost:${server1.address().port}`
+  })
+
+  t.equal(response.statusCode, 200)
+  t.equal(await response.body.text(), 'hello world!')
+
+  const response2 = await client.request({
+    ...requestOptions,
+    origin: `http://localhost:${server1.address().port}`
+  })
+
+  t.equal(response2.statusCode, 200)
+  t.equal(await response2.body.text(), 'hello world!')
+
+  const response3 = await client.request({
+    ...requestOptions,
+    origin: 'https://developer.mozilla.org'
+  })
+
+  t.equal(response3.statusCode, 200)
+  t.equal(await response3.body.text(), 'hello world! (x2)')
+})
+
+test('retry once with dual-stack', async t => {
+  t = tspl(t, { plan: 2 })
+
+  const requestOptions = {
+    method: 'GET',
+    path: '/',
+    headers: {
+      'content-type': 'application/json'
+    }
+  }
+
+  let counter = 0
+  const client = new Agent().compose([
+    dispatch => {
+      return (opts, handler) => {
+        counter++
+        return dispatch(opts, handler)
+      }
+    },
+    dns({
+      lookup: (_origin, _opts, cb) => {
+        cb(null, [
+          {
+            address: '127.0.0.1',
+            port: 3669,
+            family: 4,
+            ttl: 1000
+          },
+          {
+            address: '::1',
+            port: 3669,
+            family: 6,
+            ttl: 1000
+          }
+        ])
+      }
+    })
+  ])
+
+  after(async () => {
+    await client.close()
+  })
+
+  await t.rejects(client.request({
+    ...requestOptions,
+    origin: 'http://localhost'
+  }), 'ECONNREFUSED')
+
+  t.equal(counter, 2)
+})
+
 test('Should handle ENOTFOUND response error', async t => {
   t = tspl(t, { plan: 3 })
   let lookupCounter = 0
@@ -1787,7 +1958,7 @@ test('#3937 - Handle host correctly', async t => {
   t = tspl(t, { plan: 10 })
 
   const hostsnames = []
-  const server = createServer()
+  const server = createServer({ joinDuplicateHeaders: true })
   const requestOptions = {
     method: 'GET',
     path: '/',
@@ -1864,6 +2035,108 @@ test('#3937 - Handle host correctly', async t => {
 
   t.equal(response2.statusCode, 200)
   t.equal(await response2.body.text(), 'hello world!')
+})
+
+test('#4444 - Should preserve tuple-style headers', async t => {
+  t = tspl(t, { plan: 5 })
+
+  const server = createServer({ joinDuplicateHeaders: true })
+
+  server.on('request', (req, res) => {
+    t.equal(req.headers.host, `localhost:${server.address().port}`)
+    t.equal(req.headers.foo, 'bar')
+    t.equal(req.headers['0'], undefined)
+
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('hello world!')
+  })
+
+  server.listen(0)
+
+  await once(server, 'listening')
+
+  const client = new Agent().compose([
+    dns({
+      lookup: (_origin, _opts, cb) => {
+        cb(null, [
+          {
+            address: '::1',
+            family: 6
+          },
+          {
+            address: '127.0.0.1',
+            family: 4
+          }
+        ])
+      }
+    })
+  ])
+
+  after(async () => {
+    await client.close()
+    server.close()
+
+    await once(server, 'close')
+  })
+
+  const response = await request(`http://localhost:${server.address().port}`, {
+    dispatcher: client,
+    headers: [['foo', 'bar']]
+  })
+
+  t.equal(response.statusCode, 200)
+  t.equal(await response.body.text(), 'hello world!')
+})
+
+test('#4444 - Should preserve iterable headers', async t => {
+  t = tspl(t, { plan: 5 })
+
+  const server = createServer({ joinDuplicateHeaders: true })
+
+  server.on('request', (req, res) => {
+    t.equal(req.headers.host, `localhost:${server.address().port}`)
+    t.equal(req.headers.foo, 'bar')
+    t.equal(req.headers['0'], undefined)
+
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.end('hello world!')
+  })
+
+  server.listen(0)
+
+  await once(server, 'listening')
+
+  const client = new Agent().compose([
+    dns({
+      lookup: (_origin, _opts, cb) => {
+        cb(null, [
+          {
+            address: '::1',
+            family: 6
+          },
+          {
+            address: '127.0.0.1',
+            family: 4
+          }
+        ])
+      }
+    })
+  ])
+
+  after(async () => {
+    await client.close()
+    server.close()
+
+    await once(server, 'close')
+  })
+
+  const response = await request(`http://localhost:${server.address().port}`, {
+    dispatcher: client,
+    headers: new Map([['foo', 'bar']])
+  })
+
+  t.equal(response.statusCode, 200)
+  t.equal(await response.body.text(), 'hello world!')
 })
 
 test('#3951 - Should handle lookup errors correctly', async t => {

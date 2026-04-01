@@ -1,8 +1,6 @@
 'use strict'
 
 const { test } = require('node:test')
-const assert = require('node:assert')
-const { tspl } = require('@matteo.collina/tspl')
 const { fetch } = require('../..')
 const { createServer } = require('node:http')
 const { closeServerAsPromise } = require('../utils/node-http')
@@ -13,8 +11,8 @@ test('do not leak', (t, done) => {
   if (!hasGC) {
     throw new Error('gc is not available. Run with \'--expose-gc\'.')
   }
-  const { ok } = tspl(t, { plan: 1 })
-  const server = createServer((req, res) => {
+  t.plan(1)
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end()
   })
   t.after(closeServerAsPromise(server))
@@ -40,10 +38,10 @@ test('do not leak', (t, done) => {
     global.gc()
     const next = process.memoryUsage().heapUsed
     if (next <= prev) {
-      ok(true)
+      t.assert.ok(true)
       done()
     } else if (count++ > 20) {
-      assert.fail()
+      t.assert.fail()
     } else {
       prev = next
     }

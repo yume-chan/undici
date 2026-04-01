@@ -84,11 +84,14 @@ async function formDataBlobRequest () {
   formData.append('field', 42)
   formData.set('file', await openAsBlob('./index.mjs'))
 
-  const response = await request('http://127.0.0.1:3000', {
+  const {
+    statusCode,
+    headers,
+    body
+  } = await request('http://127.0.0.1:3000', {
     method: 'POST',
     body: formData
   })
-  console.log(await response.body.text())
 
   const data = await body.text()
   console.log('response received', statusCode)
@@ -126,17 +129,93 @@ async function deleteRequest (port = 3001) {
 }
 ```
 
-## Cacheable DNS Lookup
+## Production configuration
 
-### Using CacheableLookup to cache DNS lookups in undici
+### Using interceptors to add response caching, DNS lookup caching and connection retries
 
 ```js
-import { Agent } from 'undici'
-import CacheableLookup from 'cacheable-lookup';
+import { Agent, interceptors, setGlobalDispatcher } from 'undici'
 
-const cacheable = new CacheableLookup(opts)
+// Interceptors to add response caching, DNS caching and retrying to the dispatcher
+const { cache, dns, retry } = interceptors
 
-const agent = new Agent({
-  connect: { lookup: cacheable.lookup }
-})
+const defaultDispatcher = new Agent({
+  connections: 100, // Limit concurrent kept-alive connections to not run out of resources
+  headersTimeout: 10_000, // 10 seconds; set as appropriate for the remote servers you plan to connect to
+  bodyTimeout: 10_000,
+}).compose(cache(), dns(), retry())
+
+setGlobalDispatcher(defaultDispatcher) // Add these interceptors to all `fetch` and Undici `request` calls
 ```
+
+### Cache interceptor with `fetch`
+
+```js
+import { Agent, interceptors, setGlobalDispatcher, fetch } from 'undici'
+import { createServer } from 'node:http'
+
+const { cache } = interceptors
+
+const server = createServer((req, res) => {
+  // Cache this response for 60 seconds
+  res.setHeader('cache-control', 'public, max-age=60')
+  res.end(JSON.stringify({ now: Date.now() }))
+})
+
+await new Promise((resolve) => server.listen(0, resolve))
+const { port } = server.address()
+
+const dispatcher = new Agent().compose(cache())
+setGlobalDispatcher(dispatcher)
+
+// First request goes to the origin server
+const first = await fetch(`http://localhost:${port}`)
+const firstBody = await first.json()
+
+// Second request is served from cache if still fresh
+const second = await fetch(`http://localhost:${port}`)
+const secondBody = await second.json()
+
+console.log(firstBody.now === secondBody.now) // true
+
+await dispatcher.close()
+await new Promise((resolve) => server.close(resolve))
+```
+
+## Connecting via Unix domain sockets (UDS)
+
+### request() over UDS (per-call dispatcher)
+```js
+const { Agent, request } = require('undici')
+
+async function requestOverUds () {
+  const uds = new Agent({ connect: { socketPath: '/var/run/docker.sock' } })
+  try {
+    const { statusCode, headers, body } = await request('http://localhost/_ping', {
+      dispatcher: uds
+    })
+    console.log(statusCode, headers, await body.text())
+  } finally {
+    await uds.close()
+  }
+}
+```
+
+### fetch() over UDS (per-call dispatcher)
+```js
+const { Agent, fetch } = require('undici')
+
+async function fetchOverUds () {
+  const uds = new Agent({ connect: { socketPath: '/var/run/docker.sock' } })
+  try {
+    const res = await fetch('http://localhost/containers/json', { dispatcher: uds })
+    console.log(res.status, await res.text())
+  } finally {
+    await uds.close()
+  }
+}
+```
+
+> Note
+> - `connect.socketPath` must be the exact filesystem path your server listens on (e.g., Docker: `/var/run/docker.sock`)..
+> - Not supported on Windows (uses named pipes instead).

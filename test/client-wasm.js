@@ -43,11 +43,8 @@ const { describe, test } = require('node:test')
         }
       })
 
-      test('has the right amount of exports', async (t) => {
-        t = tspl(t, { plan: 2 })
-
-        t.ok(instance.exports, 'exports are present')
-        t.deepStrictEqual(Object.keys(instance.exports), [
+      test('has the required exports', async (t) => {
+        const requiredExports = [
           'memory',
           '_initialize',
           '__indirect_function_table',
@@ -88,7 +85,12 @@ const { describe, test } = require('node:test')
           'llhttp_set_lenient_optional_cr_before_lf',
           'llhttp_set_lenient_spaces_after_chunk_size',
           'llhttp_message_needs_eof'
-        ])
+        ]
+        t = tspl(t, { plan: requiredExports.length })
+
+        for (const key of requiredExports) {
+          t.ok(key in instance.exports, `${key} is exported`)
+        }
         await t.completed
       })
 

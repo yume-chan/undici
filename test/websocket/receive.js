@@ -1,11 +1,10 @@
 'use strict'
 
 const { test } = require('node:test')
-const assert = require('node:assert')
 const { WebSocketServer } = require('ws')
 const { WebSocket } = require('../..')
 
-test('Receiving a frame with a payload length > 2^31-1 bytes', () => {
+test('Receiving a frame with a payload length > 2^31-1 bytes', (t) => {
   const server = new WebSocketServer({ port: 0 })
 
   server.on('connection', (ws) => {
@@ -20,7 +19,7 @@ test('Receiving a frame with a payload length > 2^31-1 bytes', () => {
     ws.onmessage = reject
 
     ws.addEventListener('error', (event) => {
-      assert.ok(event.error instanceof Error) // error event is emitted
+      t.assert.ok(event.error instanceof Error) // error event is emitted
       ws.close()
       server.close()
       resolve()
@@ -28,7 +27,30 @@ test('Receiving a frame with a payload length > 2^31-1 bytes', () => {
   })
 })
 
-test('Receiving an ArrayBuffer', () => {
+test('Receiving a 64-bit payload length with a non-zero upper word', (t) => {
+  const server = new WebSocketServer({ port: 0 })
+
+  server.on('connection', (ws) => {
+    const socket = ws._socket
+
+    socket.write(Buffer.from([0x82, 0x7F, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]))
+  })
+
+  const ws = new WebSocket(`ws://localhost:${server.address().port}`)
+
+  return new Promise((resolve, reject) => {
+    ws.onmessage = reject
+
+    ws.addEventListener('error', (event) => {
+      t.assert.ok(event.error instanceof Error)
+      ws.close()
+      server.close()
+      resolve()
+    })
+  })
+})
+
+test('Receiving an ArrayBuffer', (t) => {
   const server = new WebSocketServer({ port: 0 })
 
   server.on('connection', (ws) => {
@@ -43,7 +65,7 @@ test('Receiving an ArrayBuffer', () => {
 
   ws.addEventListener('open', () => {
     ws.binaryType = 'what'
-    assert.equal(ws.binaryType, 'blob')
+    t.assert.strictEqual(ws.binaryType, 'blob')
 
     ws.binaryType = 'arraybuffer' // <--
     ws.send('Hello')
@@ -51,8 +73,8 @@ test('Receiving an ArrayBuffer', () => {
 
   return new Promise((resolve) => {
     ws.addEventListener('message', ({ data }) => {
-      assert.ok(data instanceof ArrayBuffer)
-      assert.deepStrictEqual(Buffer.from(data), Buffer.from('Hello'))
+      t.assert.ok(data instanceof ArrayBuffer)
+      t.assert.deepStrictEqual(Buffer.from(data), Buffer.from('Hello'))
       server.close()
       resolve()
     })

@@ -1,7 +1,6 @@
 'use strict'
 
 const { test } = require('node:test')
-const assert = require('node:assert')
 const { fetch } = require('../..')
 const { createServer } = require('node:http')
 const { once } = require('node:events')
@@ -14,7 +13,7 @@ test('pull dont\'t push', async (t) => {
   let count = 0
   let socket
   const max = 1_000_000
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.statusCode = 200
     socket = res.socket
 
@@ -42,7 +41,7 @@ test('pull dont\'t push', async (t) => {
   await sleep(1000)
 
   socket.destroy()
-  assert.strictEqual(count < max, true) // the stream should be closed before the max
+  t.assert.strictEqual(count < max, true) // the stream should be closed before the max
 
   // consume the  stream
   try {

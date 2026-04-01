@@ -9,8 +9,11 @@ describe('max response size', async (t) => {
   test('default max default size should allow all responses', async (t) => {
     t = tspl(t, { plan: 3 })
 
-    const server = createServer()
-    after(() => server.close())
+    const server = createServer({ joinDuplicateHeaders: true })
+    after(() => {
+      server.closeAllConnections?.()
+      server.close()
+    })
 
     server.on('request', (req, res) => {
       res.end('hello')
@@ -19,6 +22,12 @@ describe('max response size', async (t) => {
     server.listen(0, () => {
       const client = new Client(`http://localhost:${server.address().port}`, { maxResponseSize: -1 })
       after(() => client.close())
+
+      client.on('disconnect', () => {
+        if (!client.closed && !client.destroyed) {
+          t.fail('unexpected disconnect')
+        }
+      })
 
       client.request({ path: '/', method: 'GET' }, (err, { statusCode, body }) => {
         t.ifError(err)
@@ -39,8 +48,11 @@ describe('max response size', async (t) => {
   test('max response size set to zero should allow only empty responses', async (t) => {
     t = tspl(t, { plan: 3 })
 
-    const server = createServer()
-    after(() => server.close())
+    const server = createServer({ joinDuplicateHeaders: true })
+    after(() => {
+      server.closeAllConnections?.()
+      server.close()
+    })
 
     server.on('request', (req, res) => {
       res.end()
@@ -49,6 +61,12 @@ describe('max response size', async (t) => {
     server.listen(0, () => {
       const client = new Client(`http://localhost:${server.address().port}`, { maxResponseSize: 0 })
       after(() => client.close())
+
+      client.on('disconnect', () => {
+        if (!client.closed && !client.destroyed) {
+          t.fail('unexpected disconnect')
+        }
+      })
 
       client.request({ path: '/', method: 'GET' }, (err, { statusCode, body }) => {
         t.ifError(err)
@@ -69,8 +87,11 @@ describe('max response size', async (t) => {
   test('should throw an error if the response is too big', async (t) => {
     t = tspl(t, { plan: 3 })
 
-    const server = createServer()
-    after(() => server.close())
+    const server = createServer({ joinDuplicateHeaders: true })
+    after(() => {
+      server.closeAllConnections?.()
+      server.close()
+    })
 
     server.on('request', (req, res) => {
       res.end('hello')

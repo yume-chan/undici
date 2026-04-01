@@ -9,7 +9,7 @@ test('handle headers as array', async (t) => {
   t = tspl(t, { plan: 3 })
   const headers = ['a', '1', 'b', '2', 'c', '3']
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual(req.headers.a, '1')
     t.strictEqual(req.headers.b, '2')
     t.strictEqual(req.headers.c, '3')
@@ -19,6 +19,12 @@ test('handle headers as array', async (t) => {
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({
       path: '/',
@@ -34,7 +40,7 @@ test('handle multi-valued headers as array', async (t) => {
   t = tspl(t, { plan: 4 })
   const headers = ['a', '1', 'b', '2', 'c', '3', 'd', '4', 'd', '5']
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual(req.headers.a, '1')
     t.strictEqual(req.headers.b, '2')
     t.strictEqual(req.headers.c, '3')
@@ -45,6 +51,12 @@ test('handle multi-valued headers as array', async (t) => {
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({
       path: '/',
@@ -60,7 +72,7 @@ test('handle headers with array', async (t) => {
   t = tspl(t, { plan: 4 })
   const headers = { a: '1', b: '2', c: '3', d: ['4'] }
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual(req.headers.a, '1')
     t.strictEqual(req.headers.b, '2')
     t.strictEqual(req.headers.c, '3')
@@ -71,6 +83,12 @@ test('handle headers with array', async (t) => {
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({
       path: '/',
@@ -86,7 +104,7 @@ test('handle multi-valued headers', async (t) => {
   t = tspl(t, { plan: 4 })
   const headers = { a: '1', b: '2', c: '3', d: ['4', '5'] }
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     t.strictEqual(req.headers.a, '1')
     t.strictEqual(req.headers.b, '2')
     t.strictEqual(req.headers.c, '3')
@@ -97,6 +115,12 @@ test('handle multi-valued headers', async (t) => {
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({
       path: '/',
@@ -112,11 +136,17 @@ test('fail if headers array is odd', async (t) => {
   t = tspl(t, { plan: 2 })
   const headers = ['a', '1', 'b', '2', 'c', '3', 'd']
 
-  const server = createServer((req, res) => { res.end() })
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => { res.end() })
   after(() => server.close())
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
 
     client.request({
       path: '/',
@@ -135,7 +165,84 @@ test('fail if headers is not an object or an array', async (t) => {
   t = tspl(t, { plan: 2 })
   const headers = 'not an object or an array'
 
-  const server = createServer((req, res) => { res.end() })
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => { res.end() })
+  after(() => server.close())
+  server.listen(0, () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(() => client.close())
+
+    client.on('disconnect', () => {
+      if (!client.closed && !client.destroyed) {
+        t.fail('unexpected disconnect')
+      }
+    })
+
+    client.request({
+      path: '/',
+      method: 'GET',
+      headers
+    }, (err) => {
+      t.ok(err instanceof errors.InvalidArgumentError)
+      t.strictEqual(err.message, 'headers must be an object or an array')
+    })
+  })
+
+  await t.completed
+})
+
+test('fail if duplicate content-length headers (different case)', async (t) => {
+  t = tspl(t, { plan: 2 })
+  const headers = ['Content-Length', '5', 'content-length', '0']
+
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => { res.end() })
+  after(() => server.close())
+  server.listen(0, () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(() => client.close())
+
+    client.request({
+      path: '/',
+      method: 'POST',
+      headers,
+      body: 'hello'
+    }, (err) => {
+      t.ok(err instanceof errors.InvalidArgumentError)
+      t.strictEqual(err.message, 'duplicate content-length header')
+    })
+  })
+
+  await t.completed
+})
+
+test('fail if duplicate content-length headers (same case)', async (t) => {
+  t = tspl(t, { plan: 2 })
+  const headers = ['content-length', '5', 'content-length', '0']
+
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => { res.end() })
+  after(() => server.close())
+  server.listen(0, () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(() => client.close())
+
+    client.request({
+      path: '/',
+      method: 'POST',
+      headers,
+      body: 'hello'
+    }, (err) => {
+      t.ok(err instanceof errors.InvalidArgumentError)
+      t.strictEqual(err.message, 'duplicate content-length header')
+    })
+  })
+
+  await t.completed
+})
+
+test('fail if duplicate host headers (different case)', async (t) => {
+  t = tspl(t, { plan: 2 })
+  const headers = ['Host', 'example.com', 'host', 'evil.com']
+
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => { res.end() })
   after(() => server.close())
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -147,7 +254,30 @@ test('fail if headers is not an object or an array', async (t) => {
       headers
     }, (err) => {
       t.ok(err instanceof errors.InvalidArgumentError)
-      t.strictEqual(err.message, 'headers must be an object or an array')
+      t.strictEqual(err.message, 'duplicate host header')
+    })
+  })
+
+  await t.completed
+})
+
+test('fail if duplicate host headers (same case)', async (t) => {
+  t = tspl(t, { plan: 2 })
+  const headers = ['host', 'example.com', 'host', 'evil.com']
+
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => { res.end() })
+  after(() => server.close())
+  server.listen(0, () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(() => client.close())
+
+    client.request({
+      path: '/',
+      method: 'GET',
+      headers
+    }, (err) => {
+      t.ok(err instanceof errors.InvalidArgumentError)
+      t.strictEqual(err.message, 'duplicate host header')
     })
   })
 

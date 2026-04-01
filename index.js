@@ -4,10 +4,13 @@ const Client = require('./lib/dispatcher/client')
 const Dispatcher = require('./lib/dispatcher/dispatcher')
 const Pool = require('./lib/dispatcher/pool')
 const BalancedPool = require('./lib/dispatcher/balanced-pool')
+const RoundRobinPool = require('./lib/dispatcher/round-robin-pool')
 const Agent = require('./lib/dispatcher/agent')
 const ProxyAgent = require('./lib/dispatcher/proxy-agent')
+const Socks5ProxyAgent = require('./lib/dispatcher/socks5-proxy-agent')
 const EnvHttpProxyAgent = require('./lib/dispatcher/env-http-proxy-agent')
 const RetryAgent = require('./lib/dispatcher/retry-agent')
+const H2CClient = require('./lib/dispatcher/h2c-client')
 const errors = require('./lib/core/errors')
 const util = require('./lib/core/util')
 const { InvalidArgumentError } = errors
@@ -24,10 +27,13 @@ module.exports.Dispatcher = Dispatcher
 module.exports.Client = Client
 module.exports.Pool = Pool
 module.exports.BalancedPool = BalancedPool
+module.exports.RoundRobinPool = RoundRobinPool
 module.exports.Agent = Agent
 module.exports.ProxyAgent = ProxyAgent
+module.exports.Socks5ProxyAgent = Socks5ProxyAgent
 module.exports.EnvHttpProxyAgent = EnvHttpProxyAgent
 module.exports.RetryAgent = RetryAgent
+module.exports.H2CClient = H2CClient
 module.exports.RetryHandler = RetryHandler
 
 module.exports.DecoratorHandler = DecoratorHandler
@@ -37,7 +43,9 @@ module.exports.interceptors = {
   responseError: require('./lib/interceptor/response-error'),
   retry: require('./lib/interceptor/retry'),
   dump: require('./lib/interceptor/dump'),
-  cache: require('./lib/interceptor/cache')
+  cache: require('./lib/interceptor/cache'),
+  decompress: require('./lib/interceptor/decompress'),
+  deduplicate: require('./lib/interceptor/deduplicate')
 }
 
 module.exports.cacheStores = {
@@ -104,16 +112,44 @@ module.exports.setGlobalDispatcher = setGlobalDispatcher
 module.exports.getGlobalDispatcher = getGlobalDispatcher
 
 const fetchImpl = require('./lib/web/fetch').fetch
-module.exports.fetch = async function fetch (init, options = undefined) {
-  try {
-    return await fetchImpl(init, options)
-  } catch (err) {
-    if (err && typeof err === 'object') {
-      Error.captureStackTrace(err)
-    }
 
-    throw err
+// Capture __filename at module load time for stack trace augmentation.
+// This may be undefined when bundled in environments like Node.js internals.
+const currentFilename = typeof __filename !== 'undefined' ? __filename : undefined
+
+function appendFetchStackTrace (err, filename) {
+  if (!err || typeof err !== 'object') {
+    return
   }
+
+  const stack = typeof err.stack === 'string' ? err.stack : ''
+  const normalizedFilename = filename.replace(/\\/g, '/')
+
+  if (stack && (stack.includes(filename) || stack.includes(normalizedFilename))) {
+    return
+  }
+
+  const capture = {}
+  Error.captureStackTrace(capture, appendFetchStackTrace)
+
+  if (!capture.stack) {
+    return
+  }
+
+  const captureLines = capture.stack.split('\n').slice(1).join('\n')
+
+  err.stack = stack ? `${stack}\n${captureLines}` : capture.stack
+}
+
+module.exports.fetch = function fetch (init, options = undefined) {
+  return fetchImpl(init, options).catch(err => {
+    if (currentFilename) {
+      appendFetchStackTrace(err, currentFilename)
+    } else if (err && typeof err === 'object') {
+      Error.captureStackTrace(err, module.exports.fetch)
+    }
+    throw err
+  })
 }
 module.exports.Headers = require('./lib/web/fetch/headers').Headers
 module.exports.Response = require('./lib/web/fetch/response').Response
@@ -128,8 +164,6 @@ module.exports.getGlobalOrigin = getGlobalOrigin
 const { CacheStorage } = require('./lib/web/cache/cachestorage')
 const { kConstruct } = require('./lib/core/symbols')
 
-// Cache & CacheStorage are tightly coupled with fetch. Even if it may run
-// in an older version of Node, it doesn't have any use without fetch.
 module.exports.caches = new CacheStorage(kConstruct)
 
 const { deleteCookie, getCookies, getSetCookies, setCookie, parseCookie } = require('./lib/web/cookies')
@@ -146,10 +180,12 @@ module.exports.parseMIMEType = parseMIMEType
 module.exports.serializeAMimeType = serializeAMimeType
 
 const { CloseEvent, ErrorEvent, MessageEvent } = require('./lib/web/websocket/events')
-module.exports.WebSocket = require('./lib/web/websocket/websocket').WebSocket
+const { WebSocket, ping } = require('./lib/web/websocket/websocket')
+module.exports.WebSocket = WebSocket
 module.exports.CloseEvent = CloseEvent
 module.exports.ErrorEvent = ErrorEvent
 module.exports.MessageEvent = MessageEvent
+module.exports.ping = ping
 
 module.exports.WebSocketStream = require('./lib/web/websocket/stream/websocketstream').WebSocketStream
 module.exports.WebSocketError = require('./lib/web/websocket/stream/websocketerror').WebSocketError
@@ -165,3 +201,18 @@ module.exports.Symbols = require('./lib/core/symbols')
 const { EventSource } = require('./lib/web/eventsource/eventsource')
 
 module.exports.EventSource = EventSource
+
+function install () {
+  globalThis.fetch = module.exports.fetch
+  globalThis.Headers = module.exports.Headers
+  globalThis.Response = module.exports.Response
+  globalThis.Request = module.exports.Request
+  globalThis.FormData = module.exports.FormData
+  globalThis.WebSocket = module.exports.WebSocket
+  globalThis.CloseEvent = module.exports.CloseEvent
+  globalThis.ErrorEvent = module.exports.ErrorEvent
+  globalThis.MessageEvent = module.exports.MessageEvent
+  globalThis.EventSource = module.exports.EventSource
+}
+
+module.exports.install = install

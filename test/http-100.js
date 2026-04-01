@@ -10,7 +10,7 @@ const { once } = require('node:events')
 test('ignore informational response', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeProcessing()
     req.pipe(res)
   })
@@ -20,6 +20,12 @@ test('ignore informational response', async (t) => {
   await once(server, 'listening')
   const client = new Client(`http://localhost:${server.address().port}`)
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   client.request({
     path: '/',
@@ -42,7 +48,7 @@ test('ignore informational response', async (t) => {
 test('error 103 body', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     socket.write('HTTP/1.1 103 Early Hints\r\n')
     socket.write('Content-Length: 1\r\n')
     socket.write('\r\n')
@@ -71,7 +77,7 @@ test('error 103 body', async (t) => {
 test('error 100 body', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     socket.write('HTTP/1.1 100 Early Hints\r\n')
     socket.write('\r\n')
   })
@@ -97,7 +103,7 @@ test('error 100 body', async (t) => {
 test('error 101 upgrade', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: example/1\r\nConnection: Upgrade\r\n')
     socket.write('\r\n')
   })
@@ -123,7 +129,7 @@ test('error 101 upgrade', async (t) => {
 test('1xx response without timeouts', async t => {
   t = tspl(t, { plan: 2 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeProcessing()
     setTimeout(() => req.pipe(res), 2000)
   })
@@ -136,6 +142,12 @@ test('1xx response without timeouts', async t => {
     headersTimeout: 0
   })
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   client.request({
     path: '/',

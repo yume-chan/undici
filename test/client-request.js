@@ -11,18 +11,21 @@ const { kConnect } = require('../lib/core/symbols')
 const { Readable } = require('node:stream')
 const net = require('node:net')
 const { promisify } = require('node:util')
-const { NotSupportedError, InvalidArgumentError } = require('../lib/core/errors')
+const { NotSupportedError, InvalidArgumentError, AbortError } = require('../lib/core/errors')
 const { parseFormDataString } = require('./utils/formdata')
 
 test('request dump head', async (t) => {
   t = tspl(t, { plan: 3 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.setHeader('content-length', 5 * 100)
     res.flushHeaders()
     res.write('hello'.repeat(100))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -50,13 +53,16 @@ test('request dump head', async (t) => {
 test('request dump big', async (t) => {
   t = tspl(t, { plan: 3 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.setHeader('content-length', 999999999)
     while (res.write('asd')) {
       // Do nothing...
     }
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -85,12 +91,15 @@ test('request dump big', async (t) => {
 test('request dump', async (t) => {
   t = tspl(t, { plan: 3 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.shouldKeepAlive = false
     res.setHeader('content-length', 5)
     res.end('hello')
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -116,11 +125,14 @@ test('request dump', async (t) => {
 })
 
 test('request dump with abort signal', async (t) => {
-  t = tspl(t, { plan: 2 })
-  const server = createServer((req, res) => {
+  t = tspl(t, { plan: 10 })
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.write('hello')
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -134,6 +146,95 @@ test('request dump with abort signal', async (t) => {
       const ac = new AbortController()
       body.dump({ signal: ac.signal }).catch((err) => {
         t.strictEqual(err.name, 'AbortError')
+        t.strictEqual(err.message, 'This operation was aborted')
+        const stackLines = err.stack.split('\n').map((l) => l.trim())
+
+        t.ok(stackLines[0].startsWith('AbortError: This operation was aborted'))
+        t.ok(stackLines[1].startsWith('at new DOMException'))
+        t.ok(stackLines[2].startsWith('at AbortController.abort'))
+        t.ok(/client-request.js/.test(stackLines[3]))
+        t.ok(stackLines[4].startsWith('at RequestHandler.runInAsyncScope'))
+        t.ok(stackLines[5].startsWith('at RequestHandler.onHeaders'))
+        t.ok(stackLines[6].startsWith('at Request.onHeaders'))
+        server.close()
+      })
+      ac.abort()
+    })
+  })
+
+  await t.completed
+})
+
+test('request dump with POJO as invalid signal', async (t) => {
+  t = tspl(t, { plan: 9 })
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    res.write('hello')
+  })
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
+
+  server.listen(0, () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(() => client.destroy())
+
+    client.request({
+      path: '/',
+      method: 'GET'
+    }, (err, { body }) => {
+      t.ifError(err)
+      body.dump({ signal: {} }).catch((err) => {
+        t.strictEqual(err.name, 'InvalidArgumentError')
+        t.strictEqual(err.message, 'signal must be an AbortSignal')
+        const stackLines = err.stack.split('\n').map((l) => l.trim())
+
+        t.ok(stackLines[0].startsWith('InvalidArgumentError: signal must be an AbortSignal'))
+        t.ok(stackLines[1].startsWith('at BodyReadable.dump'))
+        t.ok(/client-request.js/.test(stackLines[2]))
+        t.ok(stackLines[3].startsWith('at RequestHandler.runInAsyncScope'))
+        t.ok(stackLines[4].startsWith('at RequestHandler.onHeaders'))
+        t.ok(stackLines[5].startsWith('at Request.onHeaders'))
+        server.close()
+      })
+    })
+  })
+
+  await t.completed
+})
+
+test('request dump with aborted signal', async (t) => {
+  t = tspl(t, { plan: 8 })
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    res.write('hello')
+  })
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
+
+  server.listen(0, () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(() => client.destroy())
+
+    client.request({
+      path: '/',
+      method: 'GET'
+    }, (err, { body }) => {
+      t.ifError(err)
+      const ac = new AbortController()
+      ac.abort(new AbortError('This operation was with purpose aborted'))
+
+      body.dump({ signal: ac.signal }).catch((err) => {
+        t.strictEqual(err.name, 'AbortError')
+        t.strictEqual(err.message, 'This operation was with purpose aborted')
+        const stackLines = err.stack.split('\n').map((l) => l.trim())
+
+        t.ok(stackLines[0].startsWith('AbortError: This operation was with purpose aborted'))
+        t.ok(/client-request.js/.test(stackLines[1]))
+        t.ok(stackLines[2].startsWith('at RequestHandler.runInAsyncScope'))
+        t.ok(stackLines[3].startsWith('at RequestHandler.onHeaders'))
+        t.ok(stackLines[4].startsWith('at Request.onHeaders'))
         server.close()
       })
       ac.abort()
@@ -145,10 +246,13 @@ test('request dump with abort signal', async (t) => {
 
 test('request hwm', async (t) => {
   t = tspl(t, { plan: 2 })
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.write('hello')
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -172,11 +276,14 @@ test('request abort before headers', async (t) => {
   t = tspl(t, { plan: 6 })
 
   const signal = new EE()
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end('hello')
     signal.emit('abort')
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -211,9 +318,12 @@ test('request abort before headers', async (t) => {
 test('request body destroyed on invalid callback', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -239,12 +349,15 @@ test('request body destroyed on invalid callback', async (t) => {
 test('trailers', async (t) => {
   t = tspl(t, { plan: 1 })
 
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeHead(200, { Trailer: 'Content-MD5' })
     res.addTrailers({ 'Content-MD5': 'test' })
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -268,7 +381,7 @@ test('trailers', async (t) => {
 test('destroy socket abruptly', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     const lines = [
       'HTTP/1.1 200 OK',
       'Date: Sat, 09 Oct 2010 14:28:02 GMT',
@@ -282,7 +395,10 @@ test('destroy socket abruptly', async (t) => {
     // therefore we delay it to the next event loop run.
     setImmediate(socket.destroy.bind(socket))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   await promisify(server.listen.bind(server))(0)
   const client = new Client(`http://localhost:${server.address().port}`)
@@ -309,7 +425,7 @@ test('destroy socket abruptly', async (t) => {
 test('destroy socket abruptly with keep-alive', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     const lines = [
       'HTTP/1.1 200 OK',
       'Date: Sat, 09 Oct 2010 14:28:02 GMT',
@@ -324,7 +440,10 @@ test('destroy socket abruptly with keep-alive', async (t) => {
     // therefore we delay it to the next event loop run.
     setImmediate(socket.destroy.bind(socket))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   await promisify(server.listen.bind(server))(0)
   const client = new Client(`http://localhost:${server.address().port}`)
@@ -355,10 +474,13 @@ test('request json', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -378,10 +500,13 @@ test('request long multibyte json', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const obj = { asd: 'あ'.repeat(100000) }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -401,10 +526,13 @@ test('request text', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -484,7 +612,7 @@ describe('headers', () => {
 
   describe('array', () => {
     let serverAddress
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.end(JSON.stringify(req.headers))
     })
 
@@ -494,7 +622,10 @@ describe('headers', () => {
       serverAddress = `localhost:${server.address().port}`
     })
 
-    after(() => server.close())
+    after(() => {
+      server.closeAllConnections()
+      server.close()
+    })
 
     test('empty host header', async (t) => {
       t = tspl(t, { plan: 4 })
@@ -524,7 +655,7 @@ describe('headers', () => {
 
   describe('host', () => {
     let serverAddress
-    const server = createServer((req, res) => {
+    const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
       res.end(req.headers.host)
     })
 
@@ -534,7 +665,10 @@ describe('headers', () => {
       serverAddress = `localhost:${server.address().port}`
     })
 
-    after(() => server.close())
+    after(() => {
+      server.closeAllConnections()
+      server.close()
+    })
 
     test('invalid host header', async (t) => {
       t = tspl(t, { plan: 1 })
@@ -583,10 +717,13 @@ test('request long multibyte text', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const obj = { asd: 'あ'.repeat(100000) }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -606,11 +743,14 @@ test('request blob', async (t) => {
   t = tspl(t, { plan: 2 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -633,10 +773,13 @@ test('request arrayBuffer', async (t) => {
   t = tspl(t, { plan: 2 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -659,10 +802,13 @@ test('request bytes', async (t) => {
   t = tspl(t, { plan: 2 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -685,10 +831,13 @@ test('request body', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -712,7 +861,7 @@ test('request body', async (t) => {
 test('request post body no missing data', async (t) => {
   t = tspl(t, { plan: 2 })
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -720,7 +869,10 @@ test('request post body no missing data', async (t) => {
     t.strictEqual(ret, 'asd')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -734,8 +886,7 @@ test('request post body no missing data', async (t) => {
           this.push('asd')
           this.push(null)
         }
-      }),
-      maxRedirections: 2
+      })
     })
     await body.text()
     t.ok(true, 'pass')
@@ -747,7 +898,7 @@ test('request post body no missing data', async (t) => {
 test('request post body no extra data handler', async (t) => {
   t = tspl(t, { plan: 3 })
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -755,7 +906,10 @@ test('request post body no extra data handler', async (t) => {
     t.strictEqual(ret, 'asd')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -773,8 +927,7 @@ test('request post body no extra data handler', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'GET',
-      body: reqBody,
-      maxRedirections: 0
+      body: reqBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -786,12 +939,15 @@ test('request post body no extra data handler', async (t) => {
 test('request with onInfo callback', async (t) => {
   t = tspl(t, { plan: 3 })
   const infos = []
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.writeProcessing()
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ foo: 'bar' }))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -814,11 +970,14 @@ test('request with onInfo callback but socket is destroyed before end of respons
   t = tspl(t, { plan: 5 })
   const infos = []
   let response
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     response = res
     res.writeProcessing()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -849,7 +1008,7 @@ test('request onInfo callback headers parsing', async (t) => {
   t = tspl(t, { plan: 4 })
   const infos = []
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     const lines = [
       'HTTP/1.1 103 Early Hints',
       'Link: </style.css>; rel=preload; as=style',
@@ -862,7 +1021,10 @@ test('request onInfo callback headers parsing', async (t) => {
     ]
     socket.end(lines.join('\r\n'))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   await promisify(server.listen.bind(server))(0)
 
@@ -885,7 +1047,7 @@ test('request raw responseHeaders', async (t) => {
   t = tspl(t, { plan: 4 })
   const infos = []
 
-  const server = net.createServer((socket) => {
+  const server = net.createServer({ joinDuplicateHeaders: true }, (socket) => {
     const lines = [
       'HTTP/1.1 103 Early Hints',
       'Link: </style.css>; rel=preload; as=style',
@@ -898,7 +1060,10 @@ test('request raw responseHeaders', async (t) => {
     ]
     socket.end(lines.join('\r\n'))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   await promisify(server.listen.bind(server))(0)
 
@@ -922,10 +1087,13 @@ test('request formData', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -951,10 +1119,13 @@ test('request text2', async (t) => {
   t = tspl(t, { plan: 2 })
 
   const obj = { asd: true }
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.end(JSON.stringify(obj))
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -979,13 +1150,12 @@ test('request text2', async (t) => {
 
 test('request with FormData body', async (t) => {
   const { FormData } = require('../')
-  const { Blob } = require('node:buffer')
 
   const fd = new FormData()
   fd.set('key', 'value')
   fd.set('file', new Blob(['Hello, world!']), 'hello_world.txt')
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     const contentType = req.headers['content-type']
     // ensure we received a multipart/form-data header
     t.ok(/^multipart\/form-data; boundary=-+formdata-undici-0\d+$/.test(contentType))
@@ -1012,7 +1182,10 @@ test('request with FormData body', async (t) => {
 
     return res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1034,7 +1207,7 @@ test('request post body Buffer from string', async (t) => {
   t = tspl(t, { plan: 2 })
   const requestBody = Buffer.from('abcdefghijklmnopqrstuvwxyz')
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1042,7 +1215,10 @@ test('request post body Buffer from string', async (t) => {
     t.strictEqual(ret, 'abcdefghijklmnopqrstuvwxyz')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1051,8 +1227,7 @@ test('request post body Buffer from string', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1066,7 +1241,7 @@ test('request post body Buffer from buffer', async (t) => {
   const fullBuffer = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
   const requestBody = Buffer.from(fullBuffer.buffer, 8, 16)
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1074,7 +1249,10 @@ test('request post body Buffer from buffer', async (t) => {
     t.strictEqual(ret, 'ijklmnopqrstuvwx')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1083,8 +1261,7 @@ test('request post body Buffer from buffer', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1098,7 +1275,7 @@ test('request post body Uint8Array', async (t) => {
   const fullBuffer = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
   const requestBody = new Uint8Array(fullBuffer.buffer, 8, 16)
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1106,7 +1283,10 @@ test('request post body Uint8Array', async (t) => {
     t.strictEqual(ret, 'ijklmnopqrstuvwx')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1115,8 +1295,7 @@ test('request post body Uint8Array', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1130,7 +1309,7 @@ test('request post body Uint32Array', async (t) => {
   const fullBuffer = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
   const requestBody = new Uint32Array(fullBuffer.buffer, 8, 4)
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1138,7 +1317,10 @@ test('request post body Uint32Array', async (t) => {
     t.strictEqual(ret, 'ijklmnopqrstuvwx')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1147,8 +1329,7 @@ test('request post body Uint32Array', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1162,7 +1343,7 @@ test('request post body Float64Array', async (t) => {
   const fullBuffer = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
   const requestBody = new Float64Array(fullBuffer.buffer, 8, 2)
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1170,7 +1351,10 @@ test('request post body Float64Array', async (t) => {
     t.strictEqual(ret, 'ijklmnopqrstuvwx')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1179,8 +1363,7 @@ test('request post body Float64Array', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1194,7 +1377,7 @@ test('request post body BigUint64Array', async (t) => {
   const fullBuffer = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
   const requestBody = new BigUint64Array(fullBuffer.buffer, 8, 2)
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1202,7 +1385,10 @@ test('request post body BigUint64Array', async (t) => {
     t.strictEqual(ret, 'ijklmnopqrstuvwx')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1211,8 +1397,7 @@ test('request post body BigUint64Array', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1226,7 +1411,7 @@ test('request post body DataView', async (t) => {
   const fullBuffer = new TextEncoder().encode('abcdefghijklmnopqrstuvwxyz')
   const requestBody = new DataView(fullBuffer.buffer, 8, 16)
 
-  const server = createServer(async (req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, async (req, res) => {
     let ret = ''
     for await (const chunk of req) {
       ret += chunk
@@ -1234,7 +1419,10 @@ test('request post body DataView', async (t) => {
     t.strictEqual(ret, 'ijklmnopqrstuvwx')
     res.end()
   })
-  after(() => server.close())
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
 
   server.listen(0, async () => {
     const client = new Client(`http://localhost:${server.address().port}`)
@@ -1243,8 +1431,7 @@ test('request post body DataView', async (t) => {
     const { body } = await client.request({
       path: '/',
       method: 'POST',
-      body: requestBody,
-      maxRedirections: 2
+      body: requestBody
     })
     await body.text()
     t.ok(true, 'pass')
@@ -1258,7 +1445,7 @@ test('request multibyte json with setEncoding', async (t) => {
 
   const asd = Buffer.from('あいうえお')
   const data = JSON.stringify({ asd })
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.write(data.slice(0, 1))
     setTimeout(() => {
       res.write(data.slice(1))
@@ -1286,7 +1473,7 @@ test('request multibyte text with setEncoding', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const data = Buffer.from('あいうえお')
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.write(data.slice(0, 1))
     setTimeout(() => {
       res.write(data.slice(1))
@@ -1314,7 +1501,7 @@ test('request multibyte text with setEncoding', async (t) => {
   t = tspl(t, { plan: 1 })
 
   const data = Buffer.from('あいうえお')
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     res.write(data.slice(0, 1))
     setTimeout(() => {
       res.write(data.slice(1))
@@ -1342,7 +1529,7 @@ test('#3736 - Aborted Response (without consuming body)', async (t) => {
   const plan = tspl(t, { plan: 1 })
 
   const controller = new AbortController()
-  const server = createServer((req, res) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     setTimeout(() => {
       res.writeHead(200, 'ok', {
         'content-type': 'text/plain'
