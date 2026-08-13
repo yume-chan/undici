@@ -177,6 +177,7 @@ expectType<Promise<FormData>>(response.formData())
 expectType<Promise<Uint8Array>>(response.bytes())
 expectType<Promise<unknown>>(response.json())
 expectType<Promise<string>>(response.text())
+expectType<ReadableStream<string>>(response.textStream())
 expectType<Response>(response.clone())
 
 expectType<Request>(new Request('https://example.com', { body: 'Hello, world', duplex: 'half' }))
@@ -186,3 +187,15 @@ expectNotAssignable<RequestInit>({ duplex: 'not valid' })
 expectType<string[]>(headers.getSetCookie())
 
 expectType<Request>(new Request('https://example.com', request))
+
+expectAssignable<Response>(new (class extends Response {
+  override clone () {
+    return this
+  }
+})())
+
+expectAssignable<Request>(new (class extends Request {
+  override clone () {
+    return this
+  }
+})('https://example.com'))

@@ -130,22 +130,6 @@ expectAssignable<Client>(
     pingInterval: 60e3
   })
 )
-expectAssignable<Client>(
-  new Client('', {
-    interceptors: {
-      Client: [
-        (dispatcher) => {
-          expectAssignable<Dispatcher['dispatch']>(dispatcher)
-          return (opts, handlers) => {
-            expectAssignable<Dispatcher.DispatchOptions>(opts)
-            expectAssignable<Dispatcher.DispatchHandler>(handlers)
-            return dispatcher(opts, handlers)
-          }
-        }
-      ]
-    }
-  })
-)
 
 {
   const client = new Client('')
@@ -319,4 +303,15 @@ expectAssignable<Client>(
   expectType<number>(client.stats.pending)
   expectType<number>(client.stats.running)
   expectType<number>(client.stats.size)
+
+  // opaque
+  expectType<Promise<Dispatcher.ConnectData<number>>>(
+    client.connect({ opaque: 123, path: '' })
+  )
+  expectType<Promise<Dispatcher.ConnectData<null>>>(
+    client.connect({ path: '' })
+  )
+  expectType<Promise<Dispatcher.ConnectData<{ foo: string }>>>(
+    client.connect({ opaque: { foo: 'bar' }, path: '' })
+  )
 }

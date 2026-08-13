@@ -20,6 +20,35 @@ test('isStream', () => {
   assert.ok(util.isStream(ee) === false)
 })
 
+test('addAbortListener supports AbortSignal', async () => {
+  const ac = new AbortController()
+  let calls = 0
+
+  util.addAbortListener(ac.signal, () => {
+    calls++
+  })
+
+  ac.abort()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(calls, 1)
+})
+
+test('addAbortListener removes native AbortSignal listener', async () => {
+  const ac = new AbortController()
+  let calls = 0
+
+  const remove = util.addAbortListener(ac.signal, () => {
+    calls++
+  })
+
+  remove()
+  ac.abort()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(calls, 0)
+})
+
 test('getServerName', () => {
   assert.equal(util.getServerName('1.1.1.1'), '')
   assert.equal(util.getServerName('1.1.1.1:443'), '')
@@ -32,50 +61,58 @@ test('getServerName', () => {
 test('assertRequestHandler', () => {
   assert.throws(() => util.assertRequestHandler(null), InvalidArgumentError, 'handler must be an object')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: null
-  }), InvalidArgumentError, 'invalid onConnect method')
+    onRequestStart: null
+  }), InvalidArgumentError, 'invalid onRequestStart method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: null
-  }), InvalidArgumentError, 'invalid onError method')
+    onRequestStart: () => {},
+    onResponseError: null
+  }), InvalidArgumentError, 'invalid onResponseError method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: () => {},
+    onRequestStart: () => {},
+    onResponseError: () => {},
     onBodySent: null
   }), InvalidArgumentError, 'invalid onBodySent method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: () => {},
-    onBodySent: () => {},
-    onHeaders: null
-  }), InvalidArgumentError, 'invalid onHeaders method')
+    onRequestStart: () => {},
+    onResponseError: () => {},
+    onRequestSent: null
+  }), InvalidArgumentError, 'invalid onRequestSent method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: () => {},
+    onRequestStart: () => {},
+    onResponseError: () => {},
     onBodySent: () => {},
-    onHeaders: () => {},
-    onData: null
-  }), InvalidArgumentError, 'invalid onData method')
+    onRequestSent: () => {},
+    onResponseStart: null
+  }), InvalidArgumentError, 'invalid onResponseStart method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: () => {},
+    onRequestStart: () => {},
+    onResponseError: () => {},
     onBodySent: () => {},
-    onHeaders: () => {},
-    onData: () => {},
-    onComplete: null
-  }), InvalidArgumentError, 'invalid onComplete method')
+    onRequestSent: () => {},
+    onResponseStart: () => {},
+    onResponseData: null
+  }), InvalidArgumentError, 'invalid onResponseData method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: () => {},
+    onRequestStart: () => {},
+    onResponseError: () => {},
     onBodySent: () => {},
-    onUpgrade: 'null'
-  }, 'CONNECT'), InvalidArgumentError, 'invalid onUpgrade method')
+    onRequestSent: () => {},
+    onResponseStart: () => {},
+    onResponseData: () => {},
+    onResponseEnd: null
+  }), InvalidArgumentError, 'invalid onResponseEnd method')
   assert.throws(() => util.assertRequestHandler({
-    onConnect: () => {},
-    onError: () => {},
+    onRequestStart: () => {},
+    onResponseError: () => {},
     onBodySent: () => {},
-    onUpgrade: 'null'
-  }, 'CONNECT', () => {}), InvalidArgumentError, 'invalid onUpgrade method')
+    onRequestUpgrade: 'null'
+  }, 'CONNECT'), InvalidArgumentError, 'invalid onRequestUpgrade method')
+  assert.throws(() => util.assertRequestHandler({
+    onRequestStart: () => {},
+    onResponseError: () => {},
+    onBodySent: () => {},
+    onRequestUpgrade: 'null'
+  }, 'CONNECT', () => {}), InvalidArgumentError, 'invalid onRequestUpgrade method')
 })
 
 test('parseHeaders', () => {
@@ -122,8 +159,11 @@ test('parseHeaders decodes array header values as latin1', () => {
 })
 
 test('parseRawHeaders', () => {
+  assert.deepEqual(util.parseRawHeaders(), [])
+  assert.deepEqual(util.parseRawHeaders(null), [])
   assert.deepEqual(util.parseRawHeaders(['key', 'value', Buffer.from('key'), Buffer.from('value')]), ['key', 'value', 'key', 'value'])
   assert.deepEqual(util.parseRawHeaders(['content-length', 'value', 'content-disposition', 'form-data; name="fieldName"']), ['content-length', 'value', 'content-disposition', 'form-data; name="fieldName"'])
+  assert.deepEqual(util.parseRawHeaders({ key: 'value', 'set-cookie': ['a=1', 'b=2'] }), ['key', 'value', 'set-cookie', 'a=1', 'set-cookie', 'b=2'])
 })
 
 test('parseRawHeaders decodes values as latin1, not utf8', () => {

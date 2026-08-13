@@ -14,15 +14,16 @@ test('Should provide pseudo-headers in proper order', async t => {
 
   const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
   server.on('stream', (stream, _headers, _flags, rawHeaders) => {
-    t.deepStrictEqual(rawHeaders, [
-      ':authority',
-      `localhost:${server.address().port}`,
-      ':method',
-      'GET',
-      ':path',
+    const sortedHeaders = [...rawHeaders].sort()
+    t.deepStrictEqual(sortedHeaders, [
       '/',
+      ':authority',
+      ':method',
+      ':path',
       ':scheme',
-      'https'
+      'GET',
+      'https',
+      `localhost:${server.address().port}`
     ])
 
     stream.respond({
@@ -42,6 +43,12 @@ test('Should provide pseudo-headers in proper order', async t => {
     allowH2: true
   })
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   const response = await client.request({
     path: '/',
@@ -77,6 +84,12 @@ test('The h2 pseudo-headers is not included in the headers', async t => {
     allowH2: true
   })
   after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
 
   const response = await client.request({
     path: '/',

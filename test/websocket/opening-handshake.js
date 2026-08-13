@@ -8,7 +8,7 @@ const { createSecureServer } = require('node:http2')
 const { tspl } = require('@matteo.collina/tspl')
 const { WebSocketServer, WebSocket: WSWebsocket } = require('ws')
 const { key, cert } = require('@metcoder95/https-pem')
-const { WebSocket, Agent } = require('../..')
+const { WebSocket, Agent, EnvHttpProxyAgent } = require('../..')
 const { runtimeFeatures } = require('../../lib/util/runtime-features')
 const { uid } = require('../../lib/web/websocket/constants')
 
@@ -122,7 +122,12 @@ test('WebSocket on H2', { skip: crypto == null }, async (t) => {
 
 test('WebSocket connecting to server that isn\'t a Websocket server (h2 - supports extended CONNECT protocol)', async (t) => {
   const planner = tspl(t, { plan: 6 })
+  const sessions = new Set()
   const h2Server = createSecureServer({ cert, key, settings: { enableConnectProtocol: true } })
+    .on('session', (session) => {
+      sessions.add(session)
+      session.on('close', () => sessions.delete(session))
+    })
     .on('stream', (stream, headers) => {
       planner.equal(headers[':method'], 'CONNECT')
       planner.equal(headers[':protocol'], 'websocket')
@@ -145,14 +150,21 @@ test('WebSocket connecting to server that isn\'t a Websocket server (h2 - suppor
   })
   const ws = new WebSocket(`wss://localhost:${h2Server.address().port}`, { dispatcher, protocols: ['chat'] })
   const cleaner = setupListener()
-  ws.onmessage = ws.onopen = () => planner.fail('should not open')
 
-  t.after(() => {
+  t.after(async () => {
     cleaner()
-    dispatcher.close()
+    ws.onerror = null
     ws.close()
-    h2Server.close()
+
+    for (const session of sessions) {
+      session.close()
+    }
+
+    await new Promise((resolve) => h2Server.close(resolve))
+    await dispatcher.close()
   })
+
+  ws.onmessage = ws.onopen = () => planner.fail('should not open')
 
   await planner.completed
 
@@ -195,6 +207,98 @@ test('WebSocket on H2 with a server that does not support extended CONNECT proto
     planner.ok(error)
     ws.close()
     h2Server.close()
+  })
+
+  await planner.completed
+})
+
+test('WebSocket falls back to HTTP/1.1 upgrade when H2 extended CONNECT is unavailable', async (t) => {
+  const planner = tspl(t, { plan: 4 })
+  const server = createSecureServer({ cert, key, allowHTTP1: true, settings: { enableConnectProtocol: false } })
+  const wsServer = new WebSocketServer({ server })
+
+  server.on('stream', () => planner.fail('should not attempt websocket over HTTP/2'))
+  server.on('upgrade', (req) => {
+    planner.equal(req.httpVersion, '1.1')
+  })
+
+  wsServer.on('connection', (ws, req) => {
+    planner.equal(req.httpVersion, '1.1')
+    ws.send('hello')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+
+  const dispatcher = new EnvHttpProxyAgent({
+    noProxy: '*',
+    connect: {
+      rejectUnauthorized: false
+    }
+  })
+  const ws = new WebSocket(`wss://localhost:${server.address().port}`, { dispatcher })
+
+  t.after(async () => {
+    ws.onerror = null
+    ws.close()
+    await dispatcher.close()
+    await new Promise((resolve) => server.close(resolve))
+    await new Promise((resolve) => wsServer.close(resolve))
+  })
+
+  ws.onerror = ({ error }) => planner.fail(error)
+  ws.addEventListener('open', () => {
+    planner.ok(true)
+  })
+  ws.addEventListener('message', (evt) => {
+    planner.equal(evt.data, 'hello')
+    ws.close()
+  })
+
+  await planner.completed
+})
+
+test('WebSocket falls back to HTTP/1.1 upgrade when H2 CONNECT support is omitted', async (t) => {
+  const planner = tspl(t, { plan: 4 })
+  const server = createSecureServer({ cert, key, allowHTTP1: true })
+  const wsServer = new WebSocketServer({ server })
+
+  server.on('stream', () => planner.fail('should not attempt websocket over HTTP/2'))
+  server.on('upgrade', (req) => {
+    planner.equal(req.httpVersion, '1.1')
+  })
+
+  wsServer.on('connection', (ws, req) => {
+    planner.equal(req.httpVersion, '1.1')
+    ws.send('hello')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+
+  const dispatcher = new EnvHttpProxyAgent({
+    noProxy: '*',
+    connect: {
+      rejectUnauthorized: false
+    }
+  })
+  const ws = new WebSocket(`wss://localhost:${server.address().port}`, { dispatcher })
+
+  t.after(async () => {
+    ws.onerror = null
+    ws.close()
+    await dispatcher.close()
+    await new Promise((resolve) => server.close(resolve))
+    await new Promise((resolve) => wsServer.close(resolve))
+  })
+
+  ws.onerror = ({ error }) => planner.fail(error)
+  ws.addEventListener('open', () => {
+    planner.ok(true)
+  })
+  ws.addEventListener('message', (evt) => {
+    planner.equal(evt.data, 'hello')
+    ws.close()
   })
 
   await planner.completed

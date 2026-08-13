@@ -75,9 +75,8 @@ test('SqliteCacheStore works nicely with multiple stores', { skip: runtimeFeatur
 test('SqliteCacheStore maxEntries', { skip: runtimeFeatures.has('sqlite') === false }, async () => {
   const SqliteCacheStore = require('../../lib/cache/sqlite-cache-store.js')
 
-  const store = new SqliteCacheStore({
-    maxCount: 10
-  })
+  const maxCount = 10
+  const store = new SqliteCacheStore({ maxCount })
 
   for (let i = 0; i < 20; i++) {
     /**
@@ -109,7 +108,43 @@ test('SqliteCacheStore maxEntries', { skip: runtimeFeatures.has('sqlite') === fa
     writeBody(writable, body)
   }
 
-  strictEqual(store.size <= 11, true)
+  strictEqual(store.size <= maxCount, true)
+})
+
+test('SqliteCacheStore enforces maxCount after insert', { skip: runtimeFeatures.has('sqlite') === false }, () => {
+  const SqliteCacheStore = require('../../lib/cache/sqlite-cache-store.js')
+
+  const store = new SqliteCacheStore({ maxCount: 1 })
+
+  store.set(
+    { origin: 'localhost', path: '/a', method: 'GET', headers: {} },
+    {
+      statusCode: 200,
+      statusMessage: '',
+      headers: {},
+      cachedAt: Date.now(),
+      staleAt: Date.now() + 10_000,
+      deleteAt: Date.now() + 20_000,
+      body: Buffer.from('a')
+    }
+  )
+
+  store.set(
+    { origin: 'localhost', path: '/b', method: 'GET', headers: {} },
+    {
+      statusCode: 200,
+      statusMessage: '',
+      headers: {},
+      cachedAt: Date.now() + 1,
+      staleAt: Date.now() + 10_001,
+      deleteAt: Date.now() + 20_001,
+      body: Buffer.from('b')
+    }
+  )
+
+  strictEqual(store.size, 1)
+  strictEqual(store.get({ origin: 'localhost', path: '/a', method: 'GET', headers: {} }), undefined)
+  notEqual(store.get({ origin: 'localhost', path: '/b', method: 'GET', headers: {} }), undefined)
 })
 
 test('SqliteCacheStore two writes', { skip: runtimeFeatures.has('sqlite') === false }, async () => {
@@ -156,6 +191,44 @@ test('SqliteCacheStore two writes', { skip: runtimeFeatures.has('sqlite') === fa
   }
 })
 
+test('SqliteCacheStore prune evicts oldest entries first', { skip: runtimeFeatures.has('sqlite') === false }, async () => {
+  const SqliteCacheStore = require('../../lib/cache/sqlite-cache-store.js')
+
+  const maxCount = 10
+  const store = new SqliteCacheStore({ maxCount })
+
+  const baseTime = Date.now()
+
+  for (let i = 0; i < 20; i++) {
+    const key = {
+      origin: 'localhost',
+      path: '/' + i,
+      method: 'GET',
+      headers: {}
+    }
+
+    const value = {
+      statusCode: 200,
+      statusMessage: '',
+      headers: { foo: 'bar' },
+      cachedAt: baseTime + i * 1000,
+      staleAt: baseTime + i * 1000 + 60_000,
+      deleteAt: baseTime + i * 1000 + 120_000,
+      body: Buffer.from('x')
+    }
+
+    store.set(key, value)
+  }
+
+  // The most recently cached entry must still be present;
+  // the oldest entry must have been evicted.
+  const newest = store.get({ origin: 'localhost', path: '/19', method: 'GET', headers: {} })
+  notEqual(newest, undefined)
+
+  const oldest = store.get({ origin: 'localhost', path: '/0', method: 'GET', headers: {} })
+  strictEqual(oldest, undefined)
+})
+
 test('SqliteCacheStore write & read', { skip: runtimeFeatures.has('sqlite') === false }, async () => {
   const SqliteCacheStore = require('../../lib/cache/sqlite-cache-store.js')
 
@@ -192,4 +265,108 @@ test('SqliteCacheStore write & read', { skip: runtimeFeatures.has('sqlite') === 
   store.set(key, value)
 
   deepStrictEqual(store.get(key), value)
+})
+
+test('SqliteCacheStore ignores expired Vary variants when a later one is still valid', { skip: runtimeFeatures.has('sqlite') === false }, () => {
+  const store = new SqliteCacheStore()
+  const now = Date.now()
+  const baseKey = {
+    origin: 'localhost',
+    path: '/',
+    method: 'GET'
+  }
+
+  store.set({
+    ...baseKey,
+    headers: {
+      'accept-encoding': 'gzip'
+    }
+  }, {
+    statusCode: 200,
+    statusMessage: '',
+    headers: {},
+    vary: {
+      'accept-encoding': 'gzip'
+    },
+    cachedAt: now - 2000,
+    staleAt: now - 1000,
+    deleteAt: now - 1,
+    body: Buffer.from('expired gzip')
+  })
+
+  store.set({
+    ...baseKey,
+    headers: {
+      'accept-encoding': 'br'
+    }
+  }, {
+    statusCode: 200,
+    statusMessage: '',
+    headers: {},
+    vary: {
+      'accept-encoding': 'br'
+    },
+    cachedAt: now,
+    staleAt: now + 1000,
+    deleteAt: now + 2000,
+    body: Buffer.from('valid br')
+  })
+
+  const result = store.get({
+    ...baseKey,
+    headers: {
+      'accept-encoding': 'br'
+    }
+  })
+
+  notEqual(result, undefined)
+  strictEqual(result.body.toString(), 'valid br')
+})
+
+test('SqliteCacheStore updates vary when overwriting an existing row', { skip: runtimeFeatures.has('sqlite') === false }, () => {
+  const store = new SqliteCacheStore()
+  const now = Date.now()
+  const baseKey = {
+    origin: 'localhost',
+    path: '/',
+    method: 'GET'
+  }
+
+  store.set({
+    ...baseKey,
+    headers: {}
+  }, {
+    statusCode: 200,
+    statusMessage: '',
+    headers: {},
+    cachedAt: now,
+    staleAt: now + 1000,
+    deleteAt: now + 2000,
+    body: Buffer.from('initial')
+  })
+
+  store.set({
+    ...baseKey,
+    headers: {
+      'accept-language': 'en'
+    }
+  }, {
+    statusCode: 200,
+    statusMessage: '',
+    headers: {},
+    vary: {
+      'accept-language': 'en'
+    },
+    cachedAt: now,
+    staleAt: now + 1000,
+    deleteAt: now + 2000,
+    body: Buffer.from('updated')
+  })
+
+  strictEqual(store.get({
+    ...baseKey,
+    headers: {
+      'accept-language': 'fr'
+    }
+  }), undefined)
 })

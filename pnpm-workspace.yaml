@@ -1,0 +1,4 @@
+allowBuilds:
+  '@metcoder95/https-pem': true
+  esbuild: true
+  unrs-resolver: true

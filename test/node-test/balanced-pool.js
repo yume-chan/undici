@@ -3,9 +3,12 @@
 const { describe, test } = require('node:test')
 const assert = require('node:assert/strict')
 const { BalancedPool, Pool, Client, errors } = require('../..')
+const { EventEmitter } = require('node:events')
 const { createServer } = require('node:http')
 const { promisify } = require('node:util')
 const { tspl } = require('@matteo.collina/tspl')
+const { kUrl } = require('../../lib/core/symbols')
+const { kGetDispatcher } = require('../../lib/dispatcher/pool-base')
 
 test('throws when factory is not a function', (t) => {
   const p = tspl(t, { plan: 2 })
@@ -46,6 +49,56 @@ test('add/remove upstreams', (t) => {
 
   pool.removeUpstream(upstream01)
   p.deepStrictEqual(pool.upstreams, [])
+})
+
+test('does not select dispatcher twice when selected dispatcher backpressures', (t) => {
+  class FakeDispatcher extends EventEmitter {
+    constructor (origin) {
+      super()
+      this[kUrl] = new URL(origin)
+    }
+
+    dispatch () {
+      return false
+    }
+
+    close () {
+      this.closed = true
+      return Promise.resolve()
+    }
+
+    destroy () {
+      this.destroyed = true
+      return Promise.resolve()
+    }
+  }
+
+  class CountingBalancedPool extends BalancedPool {
+    constructor (...args) {
+      super(...args)
+      this.calls = 0
+    }
+
+    [kGetDispatcher] () {
+      this.calls++
+      return super[kGetDispatcher]()
+    }
+  }
+
+  const pool = new CountingBalancedPool([
+    'http://localhost:1',
+    'http://localhost:2'
+  ], {
+    factory: (origin) => new FakeDispatcher(origin)
+  })
+  t.after(() => pool.close())
+
+  const ret = pool.dispatch({}, {
+    onResponseError () {}
+  })
+
+  assert.strictEqual(ret, true)
+  assert.strictEqual(pool.calls, 1)
 })
 
 test('basic get', async (t) => {
@@ -297,6 +350,10 @@ test('getUpstream returns undefined for closed/destroyed upstream', (t) => {
   const result = pool.getUpstream(upstream)
   p.strictEqual(result, undefined)
 })
+
+function getErrorPort (err) {
+  return err?.socket?.remotePort ?? err?.port
+}
 
 class TestServer {
   constructor ({ config: { server, socketHangup, downOnRequests, socketHangupOnRequests }, onRequest }) {
@@ -551,15 +608,21 @@ describe('weighted round robin', () => {
         try {
           await client.request({ path: '/', method: 'GET' })
         } catch (e) {
-          const serverWithError =
-          servers.find(server => server.port === e.port) ||
-          servers.find(server => {
-            if (typeof AggregateError === 'function' && e instanceof AggregateError) {
-              return e.errors.some(e => server.port === (e.socket?.remotePort ?? e.port))
+          const serverWithError = servers.find(server => {
+            if (server.port === getErrorPort(e)) {
+              return true
             }
 
-            return server.port === e.socket.remotePort
+            if (typeof AggregateError === 'function' && e instanceof AggregateError) {
+              return e.errors.some(err => server.port === getErrorPort(err))
+            }
+
+            return false
           })
+
+          if (serverWithError === undefined) {
+            throw e
+          }
 
           serverWithError.requestsCount++
 

@@ -390,7 +390,7 @@ test('backpressure algorithm', async (t) => {
   }
 
   const noopHandler = {
-    onError (err) {
+    onResponseError (_controller, err) {
       throw err
     }
   }
@@ -652,6 +652,101 @@ test('pool connect with clientTtl specified', async (t) => {
   await t.completed
 })
 
+test('pool replaces stale client when connections limit is reached', async (t) => {
+  t = tspl(t, { plan: 2 })
+
+  const server = createServer((req, res) => {
+    res.end('ok')
+  })
+  after(() => server.close())
+
+  await new Promise(resolve => server.listen(0, resolve))
+
+  const client = new Pool(`http://localhost:${server.address().port}`, {
+    connections: 1,
+    clientTtl: 1
+  })
+  after(() => client.destroy())
+
+  async function request () {
+    const { statusCode, body } = await client.request({
+      path: '/',
+      method: 'GET'
+    })
+    await body.text()
+    return statusCode
+  }
+
+  t.strictEqual(await request(), 200)
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const statusCode = await Promise.race([
+    request(),
+    new Promise((_resolve, reject) => {
+      setTimeout(() => reject(new Error('second request hung')), 1000)
+    })
+  ])
+  t.strictEqual(statusCode, 200)
+})
+
+test('pool does not report backpressure after removing a stale client when another client is available', async (t) => {
+  t = tspl(t, { plan: 4 })
+
+  let created = 0
+  let acceptedBySecondClient = 0
+
+  class FakeClient extends EventEmitter {
+    constructor () {
+      super()
+      this.id = ++created
+      this.closed = false
+      this.destroyed = false
+    }
+
+    dispatch () {
+      if (this.id === 1) {
+        this.emit('connect', new URL('http://notahost'), [this])
+        return false
+      }
+
+      acceptedBySecondClient++
+      return true
+    }
+
+    close (cb) {
+      this.closed = true
+      if (cb) {
+        cb()
+      }
+    }
+
+    destroy () {
+      this.destroyed = true
+    }
+  }
+
+  const pool = new Pool('http://notahost', {
+    connections: 2,
+    clientTtl: 1,
+    factory: () => new FakeClient()
+  })
+  after(() => pool.destroy())
+
+  const handler = {
+    onResponseError (_controller, err) {
+      throw err
+    }
+  }
+
+  t.strictEqual(pool.dispatch({ path: '/', method: 'GET' }, handler), true)
+  t.strictEqual(created, 2)
+
+  await new Promise(resolve => setTimeout(resolve, 10))
+
+  t.strictEqual(pool.dispatch({ path: '/', method: 'GET' }, handler), true)
+  t.strictEqual(acceptedBySecondClient, 1)
+})
+
 test('pool dispatch', async (t) => {
   t = tspl(t, { plan: 2 })
 
@@ -669,18 +764,18 @@ test('pool dispatch', async (t) => {
       path: '/',
       method: 'GET'
     }, {
-      onConnect () {
+      onRequestStart () {
       },
-      onHeaders (statusCode, headers) {
+      onResponseStart (_controller, statusCode, headers) {
         t.strictEqual(statusCode, 200)
       },
-      onData (chunk) {
+      onResponseData (_controller, chunk) {
         buf += chunk
       },
-      onComplete () {
+      onResponseEnd () {
         t.strictEqual(buf, 'asd')
       },
-      onError () {
+      onResponseError () {
       }
     })
   })
@@ -816,17 +911,17 @@ test('pool dispatch error', async (t) => {
       path: '/',
       method: 'GET'
     }, {
-      onConnect () {
+      onRequestStart () {
       },
-      onHeaders (statusCode, headers) {
+      onResponseStart (_controller, statusCode, headers) {
         t.strictEqual(statusCode, 200)
       },
-      onData (chunk) {
+      onResponseData (_controller, chunk) {
       },
-      onComplete () {
+      onResponseEnd () {
         t.ok(true, 'pass')
       },
-      onError () {
+      onResponseError () {
       }
     })
 
@@ -837,16 +932,16 @@ test('pool dispatch error', async (t) => {
         'transfer-encoding': 'fail'
       }
     }, {
-      onConnect () {
+      onRequestStart () {
         t.fail()
       },
-      onHeaders (statusCode, headers) {
+      onResponseStart (_controller, statusCode, headers) {
         t.fail()
       },
-      onData (chunk) {
+      onResponseData (_controller, chunk) {
         t.fail()
       },
-      onError (err) {
+      onResponseError (_controller, err) {
         t.strictEqual(err.code, 'UND_ERR_INVALID_ARG')
       }
     })
@@ -874,17 +969,17 @@ test('pool request abort in queue', async (t) => {
       path: '/',
       method: 'GET'
     }, {
-      onConnect () {
+      onRequestStart () {
       },
-      onHeaders (statusCode, headers) {
+      onResponseStart (_controller, statusCode, headers) {
         t.strictEqual(statusCode, 200)
       },
-      onData (chunk) {
+      onResponseData (_controller, chunk) {
       },
-      onComplete () {
+      onResponseEnd () {
         t.ok(true, 'pass')
       },
-      onError () {
+      onResponseError () {
       }
     })
 
@@ -921,17 +1016,17 @@ test('pool stream abort in queue', async (t) => {
       path: '/',
       method: 'GET'
     }, {
-      onConnect () {
+      onRequestStart () {
       },
-      onHeaders (statusCode, headers) {
+      onResponseStart (_controller, statusCode, headers) {
         t.strictEqual(statusCode, 200)
       },
-      onData (chunk) {
+      onResponseData (_controller, chunk) {
       },
-      onComplete () {
+      onResponseEnd () {
         t.ok(true, 'pass')
       },
-      onError () {
+      onResponseError () {
       }
     })
 
@@ -968,17 +1063,17 @@ test('pool pipeline abort in queue', async (t) => {
       path: '/',
       method: 'GET'
     }, {
-      onConnect () {
+      onRequestStart () {
       },
-      onHeaders (statusCode, headers) {
+      onResponseStart (_controller, statusCode, headers) {
         t.strictEqual(statusCode, 200)
       },
-      onData (chunk) {
+      onResponseData (_controller, chunk) {
       },
-      onComplete () {
+      onResponseEnd () {
         t.ok(true, 'pass')
       },
-      onError () {
+      onResponseError () {
       }
     })
 

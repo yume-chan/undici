@@ -145,6 +145,28 @@ for (const factory of [
     t.strictEqual(body, `PUT /5 :: host@${server} connection@keep-alive content-length@7 :: REQUEST`)
   })
 
+  test('should remove request body headers when HTTP 302 changes POST to GET', async t => {
+    t = tspl(t, { plan: 3 })
+    const server = await startRedirectingServer()
+
+    const { statusCode, headers, body: bodyStream } = await request(t, server, undefined, `http://${server}/302`, {
+      method: 'POST',
+      body: 'REQUEST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Language': 'en',
+        'X-Test': 'ok'
+      },
+      maxRedirections: 10
+    })
+
+    const body = await bodyStream.text()
+
+    t.strictEqual(statusCode, 200)
+    t.ok(!headers.location)
+    t.strictEqual(body, `GET /5 :: host@${server} connection@keep-alive x-test@ok`)
+  })
+
   test('should follow redirection after a HTTP 303 changing method to GET', async t => {
     t = tspl(t, { plan: 3 })
 
@@ -406,7 +428,7 @@ for (const factory of [
     await t.completed
   })
 
-  test('should follow a redirect chain up to the allowed number of times for redirectionLimitReached', async t => {
+  test('should throw when max redirections is reached and throwOnMaxRedirect is enabled', async t => {
     t = tspl(t, { plan: 1 })
 
     const server = await startRedirectingServer()
@@ -488,6 +510,28 @@ for (const factory of [
     const { statusCode, headers, body: bodyStream } = await request(t, server, undefined, `http://${server}/301`, {
       method: 'PUT',
       body: createReadableStream('REQUEST'),
+      maxRedirections: 10
+    })
+
+    const body = await bodyStream.text()
+
+    t.strictEqual(statusCode, 301)
+    t.strictEqual(headers.location, `http://${server}/301/2`)
+    t.strictEqual(body.length, 0)
+
+    await t.completed
+  })
+
+  test('should stop following redirects once async iterable request bodies are disturbed', async t => {
+    t = tspl(t, { plan: 3 })
+
+    const server = await startRedirectingServer()
+
+    const { statusCode, headers, body: bodyStream } = await request(t, server, undefined, `http://${server}/301`, {
+      method: 'PUT',
+      body: (async function * () {
+        yield 'REQUEST'
+      })(),
       maxRedirections: 10
     })
 

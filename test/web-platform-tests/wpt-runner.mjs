@@ -4,10 +4,10 @@ import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { debuglog } from 'node:util'
 import {
-  sanitizeUnpairedSurrogates,
-  createDeferredPromise
+  sanitizeUnpairedSurrogates
 } from './runner/utils.mjs'
 import * as jsondiffpatch from 'jsondiffpatch'
 
@@ -18,6 +18,164 @@ const EXPECTATION_PATH = join(import.meta.dirname, 'expectation.json')
 const CA_CERT_PATH = join(import.meta.dirname, 'runner/certs/cacert.pem')
 
 const log = debuglog('UNDICI_WPT')
+const WPT_SERVER_URL = 'http://web-platform.test:8000'
+const PYTHON_CANDIDATES = ['python3', 'python']
+
+let pythonInfoPromise
+
+const SERVER_READY_CHECKS = [
+  ['http-default', (line) => line.includes('http on port 8000') && line.includes('Starting http server')],
+  ['http-alt', (line) => /\bhttp on port (?!8000\b)\d+\].*Starting http server/.test(line)],
+  ['http-local', (line) => line.includes('http-local on port') && line.includes('Starting http server')],
+  ['http-public', (line) => line.includes('http-public on port') && line.includes('Starting http server')],
+  ['https-8443', (line) => line.includes('https on port 8443') && line.includes('Starting https server')],
+  ['https-8444', (line) => line.includes('https on port 8444') && line.includes('Starting https server')],
+  ['https-local', (line) => line.includes('https-local on port') && line.includes('Starting https server')],
+  ['https-public', (line) => line.includes('https-public on port') && line.includes('Starting https server')],
+  ['ws', (line) => line.includes('ws on port') && line.includes('Listen on:')],
+  ['wss', (line) => line.includes('wss on port') && line.includes('Listen on:')],
+  ['h2', (line) => line.includes('h2 on port 9000') && line.includes('Starting http2 server')]
+]
+
+function streamServerLogs (stream, target, onLine) {
+  let buffer = ''
+
+  stream.setEncoding('utf8')
+  stream.on('data', (chunk) => {
+    target.write(chunk)
+    buffer += chunk
+
+    let endIndex
+    while ((endIndex = buffer.indexOf('\n')) !== -1) {
+      onLine(buffer.slice(0, endIndex))
+      buffer = buffer.slice(endIndex + 1)
+    }
+  })
+
+  stream.on('end', () => {
+    if (buffer.length > 0) {
+      onLine(buffer)
+    }
+  })
+}
+
+async function terminateProcess (proc, exitPromise) {
+  if (proc.exitCode != null) {
+    await exitPromise
+    return
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      // SIGINT does not reliably terminate the Python WPT server tree on Windows.
+      await new Promise((resolve) => {
+        const killer = spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], {
+          stdio: 'ignore'
+        })
+
+        killer.once('error', resolve)
+        killer.once('exit', resolve)
+      })
+    } catch {
+      proc.kill()
+    }
+  } else {
+    proc.kill('SIGINT')
+
+    const exited = await Promise.race([
+      exitPromise.then(() => true),
+      new Promise(resolve => setTimeout(resolve, 1_000, false))
+    ])
+
+    if (!exited && proc.exitCode == null) {
+      proc.kill('SIGKILL')
+    }
+  }
+
+  await exitPromise
+}
+
+function parsePythonVersion (output) {
+  const versionRegex = /^Python (?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)/m.exec(output.trim())
+
+  if (versionRegex === null) {
+    return null
+  }
+
+  const { major, minor, patch } = versionRegex.groups
+  return { major: Number(major), minor: Number(minor), patch: Number(patch) }
+}
+
+async function getPythonInfo () {
+  pythonInfoPromise ??= (async () => {
+    const failures = []
+
+    for (const command of PYTHON_CANDIDATES) {
+      const result = await new Promise((resolve) => {
+        const proc = spawn(command, ['--version'], {
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+
+        let output = ''
+        let settled = false
+        const onData = (chunk) => {
+          output += chunk.toString()
+        }
+
+        proc.stdout.on('data', onData)
+        proc.stderr.on('data', onData)
+
+        const timeout = setTimeout(() => {
+          if (!settled) {
+            settled = true
+            proc.kill()
+            resolve({ command, reason: 'timed out while checking version' })
+          }
+        }, 10_000)
+
+        proc.once('error', (err) => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          clearTimeout(timeout)
+          resolve({ command, reason: err.message })
+        })
+
+        proc.once('exit', (code) => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          clearTimeout(timeout)
+
+          const version = parsePythonVersion(output)
+          if (code === 0 && version !== null && version.major === 3) {
+            resolve({ command, version })
+            return
+          }
+
+          const reason = version !== null
+            ? `found unsupported Python ${version.major}.${version.minor}.${version.patch}`
+            : output.trim() || `exited with code ${code}`
+          resolve({ command, reason })
+        })
+      })
+
+      if ('version' in result) {
+        return result
+      }
+
+      failures.push(`${command}: ${result.reason}`)
+    }
+
+    throw new Error(`Python 3 is required. Checked: ${failures.join('; ')}`)
+  })()
+
+  return pythonInfoPromise
+}
 
 async function ensureWPTCheckout () {
   if (existsSync(WPT_SCRIPT_PATH)) {
@@ -48,56 +206,136 @@ async function ensureWPTCheckout () {
   }
 }
 
-async function runWithTestUtil (testFunction) {
-  const { promise, resolve, reject } = createDeferredPromise()
+async function startWPTServer () {
+  const { command: pythonCommand } = await getPythonInfo()
+  const { promise, resolve, reject } = Promise.withResolvers()
+  const { promise: readyPromise, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers()
+  const readyChecks = new Set()
+  let serverResponding = false
+  let readySettled = false
 
-  console.log('Starting WPT server...')
-  const proc = spawn('python3', [WPT_SCRIPT_PATH, 'serve', '--config', '../runner/config.json'], {
+  const maybeResolveReady = () => {
+    if (!readySettled && serverResponding && readyChecks.size === SERVER_READY_CHECKS.length) {
+      readySettled = true
+      resolveReady()
+    }
+  }
+
+  const onServerLine = (line) => {
+    for (const [name, matches] of SERVER_READY_CHECKS) {
+      if (!readyChecks.has(name) && matches(line)) {
+        readyChecks.add(name)
+        maybeResolveReady()
+      }
+    }
+  }
+
+  const proc = spawn(pythonCommand, [WPT_SCRIPT_PATH, 'serve', '--config', '../runner/config.json'], {
     cwd: WPT_DIR,
-    stdio: 'inherit'
+    stdio: ['ignore', 'pipe', 'pipe']
   })
 
-  proc.once('exit', () => resolve())
-  proc.once('error', (err) => reject(err))
+  streamServerLogs(proc.stdout, process.stdout, onServerLine)
+  streamServerLogs(proc.stderr, process.stderr, onServerLine)
 
-  const serverUrl = 'http://web-platform.test:8000/'
-
-  // Wait for server to be ready
-  while (true) {
-    await new Promise(resolve => setTimeout(resolve, 500))
-
-    try {
-      const req = await fetch(serverUrl) // eslint-disable-line no-restricted-globals
-      await req.body?.cancel()
-      if (req.status === 200) {
-        break
-      }
-    } catch (err) {
-      // Server not ready yet
+  proc.once('exit', (code, signal) => {
+    if (!readySettled) {
+      readySettled = true
+      rejectReady(new Error(`WPT server exited before it was ready (code: ${code}, signal: ${signal ?? 'none'})`))
     }
-  }
 
-  console.log(`✅ WPT server started at ${serverUrl}`)
+    resolve()
+  })
 
-  let results
+  proc.once('error', (err) => {
+    if (!readySettled) {
+      readySettled = true
+      rejectReady(err)
+    }
+
+    reject(err)
+  })
+
+  const readinessTimeout = setTimeout(() => {
+    if (!readySettled) {
+      readySettled = true
+      const missing = SERVER_READY_CHECKS
+        .map(([name]) => name)
+        .filter((name) => !readyChecks.has(name))
+        .join(', ')
+      rejectReady(new Error(`Timed out waiting for WPT server readiness. Missing: ${missing}`))
+    }
+  }, 30_000)
 
   try {
-    results = await testFunction()
-  } finally {
-    console.log('Killing WPT server')
+    while (!serverResponding && !proc.killed && proc.exitCode == null) {
+      await new Promise(resolve => setTimeout(resolve, 100))
 
-    if (!proc.killed) {
-      proc.kill('SIGINT')
+      try {
+        const req = await fetch(WPT_SERVER_URL) // eslint-disable-line no-restricted-globals
+        await req.body?.cancel()
+        if (req.status === 200) {
+          serverResponding = true
+          maybeResolveReady()
+        }
+      } catch {
+        // Server not ready yet
+      }
+    }
+
+    await readyPromise
+    return { proc, exitPromise: promise, readinessTimeout }
+  } catch (err) {
+    clearTimeout(readinessTimeout)
+
+    try {
+      await terminateProcess(proc, promise)
+    } catch {}
+
+    throw err
+  }
+}
+
+async function runWithTestUtil (testFunction) {
+  const maxRetries = 3
+  let lastError
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`Starting WPT server (attempt ${attempt}/${maxRetries})...`)
+
+    try {
+      const { proc, exitPromise, readinessTimeout } = await startWPTServer()
+
+      console.log(`✅ WPT server started at ${WPT_SERVER_URL}`)
+
+      try {
+        const results = await testFunction()
+        return results
+      } finally {
+        clearTimeout(readinessTimeout)
+        console.log('Killing WPT server')
+        await terminateProcess(proc, exitPromise)
+      }
+    } catch (err) {
+      lastError = err
+
+      if (attempt < maxRetries) {
+        console.log(`⚠️ WPT server failed to start: ${err.message}`)
+        console.log('Retrying in 2 seconds...')
+        await sleep(2_000)
+      }
     }
   }
 
-  await promise
-  return results
+  throw lastError
 }
 
 function runSingleTest (url, options, expectation, timeout = 10000) {
   const startTime = Date.now()
-  const { promise, resolve, reject } = createDeferredPromise()
+  const { promise, resolve, reject } = Promise.withResolvers()
+  // NODE_EXTRA_CA_CERTS is required for HTTPS/WSS pages, but it causes the
+  // WebSocket-over-HTTP/2 WPT variants to exit without emitting harness output.
+  const useExtraCACerts = !(url.pathname.startsWith('/websockets/') && url.searchParams.get('wpt_flags')?.includes('h2'))
 
   const proc = spawn('node', [
     '--expose-gc',
@@ -109,7 +347,7 @@ function runSingleTest (url, options, expectation, timeout = 10000) {
     env: {
       ...process.env,
       NO_COLOR: '1',
-      NODE_EXTRA_CA_CERTS: CA_CERT_PATH
+      ...(useExtraCACerts ? { NODE_EXTRA_CA_CERTS: CA_CERT_PATH } : {})
     }
   })
 
@@ -138,12 +376,12 @@ function runSingleTest (url, options, expectation, timeout = 10000) {
           const { tests, harnessStatus: _harnessStatus } = JSON.parse(message)
           harnessStatus = _harnessStatus
           cases.push(...tests)
-        } catch (e) {
+        } catch {
           console.error('Failed to parse:', message)
         }
         stdoutOutput = stdoutOutput.slice(endIndex + 1)
       } else {
-        break // Wait for more data
+        break
       }
     }
   })
@@ -165,7 +403,7 @@ function runSingleTest (url, options, expectation, timeout = 10000) {
     }
   })
 
-  proc.once('exit', () => {
+  proc.once('close', () => {
     clearTimeout(timer)
     const duration = Date.now() - startTime
 
@@ -251,7 +489,7 @@ function discoverTestsToRun (filter, expectation) {
           if (!key.endsWith('.html') && !key.endsWith('.js')) continue
 
           const testPath = path || `${prefix}/${key}`
-          const url = new URL(testPath, 'http://web-platform.test:8000')
+          const url = new URL(testPath, WPT_SERVER_URL)
 
           if (url.pathname.includes('.worker.') ||
               url.pathname.includes('serviceworker') ||
@@ -351,32 +589,14 @@ async function setup () {
 
   await ensureWPTCheckout()
 
-  // Check Python
-  const pythonCheck = spawn('python3', ['--version'], { stdio: 'pipe' })
-  pythonCheck.stdout.setEncoding('ascii')
-  const pythonVersion = await new Promise((resolve, reject) => {
-    pythonCheck.stdout.on('data', (c) => {
-      const versionRegex = /^Python (?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)/.exec(c.trim())
-
-      if (versionRegex !== null) {
-        const { major, minor, patch } = versionRegex.groups
-        resolve({ major: Number(major), minor: Number(minor), patch: Number(patch) })
-        clearTimeout(timeout)
-      }
-    })
-
-    const timeout = setTimeout(reject, 30_000, 'Took too long to determine Python version')
-  })
-
-  if (pythonVersion.major !== 3) {
-    throw new Error('Python 3 is required')
-  }
+  const { command: pythonCommand, version: pythonVersion } = await getPythonInfo()
+  console.log(`Using Python command: ${pythonCommand} (${pythonVersion.major}.${pythonVersion.minor}.${pythonVersion.patch})`)
 
   // Check if manifest exists
   const manifestPath = join(WPT_DIR, 'MANIFEST.json')
   if (!existsSync(manifestPath)) {
     console.log('Updating WPT manifest...')
-    const manifestProc = spawn('python3', [WPT_SCRIPT_PATH, 'manifest'], {
+    const manifestProc = spawn(pythonCommand, [WPT_SCRIPT_PATH, 'manifest'], {
       cwd: WPT_DIR,
       stdio: 'inherit'
     })
@@ -401,7 +621,7 @@ async function setup () {
   const etcHostsConfigured = hostsContent.includes('web-platform.test')
 
   async function setupHostsFile () {
-    const makeHostsProc = spawn('python3', [WPT_SCRIPT_PATH, 'make-hosts-file'], {
+    const makeHostsProc = spawn(pythonCommand, [WPT_SCRIPT_PATH, 'make-hosts-file'], {
       cwd: WPT_DIR,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -457,9 +677,9 @@ async function setup () {
       console.log('Please configure hosts file manually:')
       console.log(`cd ${WPT_DIR}`)
       if (process.platform === 'win32') {
-        console.log('python wpt make-hosts-file | Out-File $env:SystemRoot\\System32\\drivers\\etc\\hosts -Encoding ascii -Append')
+        console.log(`${pythonCommand} wpt make-hosts-file | Out-File $env:SystemRoot\\System32\\drivers\\etc\\hosts -Encoding ascii -Append`)
       } else {
-        console.log('python3 wpt make-hosts-file | sudo tee -a /etc/hosts')
+        console.log(`${pythonCommand} wpt make-hosts-file | sudo tee -a /etc/hosts`)
       }
 
       console.log('❌ \x1B[31mSetup incomplete.\x1B[0m')

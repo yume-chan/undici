@@ -7,7 +7,7 @@ const { test } = require('node:test')
 const { tspl } = require('@matteo.collina/tspl')
 const pem = require('@metcoder95/https-pem')
 
-const { H2CClient, Client } = require('..')
+const { H2CClient, Client, Agent, Pool, request } = require('..')
 
 test('Should throw if no h2c origin', async t => {
   const planner = tspl(t, { plan: 1 })
@@ -21,6 +21,24 @@ test('Should throw if pipelining greather than concurrent streams', async t => {
   const planner = tspl(t, { plan: 1 })
 
   planner.throws(() => new H2CClient('http://localhost/', { pipelining: 10, maxConcurrentStreams: 5 }))
+
+  await planner.completed
+})
+
+test('Should throw if bad maxConcurrentStreams has been passed', async t => {
+  const planner = tspl(t, { plan: 3 })
+
+  planner.throws(() => new H2CClient('http://localhost/', { maxConcurrentStreams: {} }), {
+    message: 'maxConcurrentStreams must be a positive integer, greater than 0'
+  })
+
+  planner.throws(() => new H2CClient('http://localhost/', { maxConcurrentStreams: 0 }), {
+    message: 'maxConcurrentStreams must be a positive integer, greater than 0'
+  })
+
+  planner.throws(() => new H2CClient('http://localhost/', { maxConcurrentStreams: 1.5 }), {
+    message: 'maxConcurrentStreams must be a positive integer, greater than 0'
+  })
 
   await planner.completed
 })
@@ -83,6 +101,56 @@ test('Should support h2c connection with body', async t => {
   planner.equal(Buffer.concat(bodyChunks).toString(), 'Hello, world!')
 })
 
+test('Should queue h2c requests above the remote max concurrent streams setting', async t => {
+  const planner = tspl(t, { plan: 3 })
+  let activeStreams = 0
+  let maxActiveStreams = 0
+  const paths = []
+
+  const server = createServer({
+    settings: {
+      maxConcurrentStreams: 1
+    }
+  })
+
+  server.on('stream', (stream, headers) => {
+    activeStreams++
+    maxActiveStreams = Math.max(maxActiveStreams, activeStreams)
+    paths.push(headers[':path'])
+
+    stream.respond({ ':status': 200 })
+    setTimeout(() => {
+      activeStreams--
+      stream.end('Hello, world!')
+    }, 50)
+  })
+
+  server.listen()
+  await once(server, 'listening')
+  const client = new H2CClient(`http://localhost:${server.address().port}/`, {
+    maxConcurrentStreams: 10,
+    pipelining: 10
+  })
+
+  t.after(() => client.close())
+  t.after(() => server.close())
+
+  const responses = await Promise.all(Array.from({ length: 5 }, async (_, i) => {
+    const response = await client.request({ path: `/${i}`, method: 'GET' })
+    return {
+      statusCode: response.statusCode,
+      body: await response.body.text()
+    }
+  }))
+
+  planner.strictEqual(maxActiveStreams, 1)
+  planner.deepStrictEqual(paths, ['/0', '/1', '/2', '/3', '/4'])
+  planner.deepStrictEqual(responses, Array.from({ length: 5 }, () => ({
+    statusCode: 200,
+    body: 'Hello, world!'
+  })))
+})
+
 test('Should reject request if not h2c supported', async t => {
   const planner = tspl(t, { plan: 1 })
 
@@ -95,13 +163,29 @@ test('Should reject request if not h2c supported', async t => {
   await once(server, 'listening')
   const client = new H2CClient(`http://localhost:${server.address().port}/`)
 
-  t.after(() => client.close())
+  t.after(() => client.destroy())
   t.after(() => server.close())
 
-  planner.rejects(
+  await planner.rejects(
     client.request({ path: '/', method: 'GET' }),
-    'SocketError: other side closed'
+    {
+      name: 'SocketError',
+      code: 'UND_ERR_SOCKET',
+      message: 'other side closed'
+    }
   )
+
+  let closeTimer = null
+  try {
+    await Promise.race([
+      client.close(),
+      new Promise((resolve, reject) => {
+        closeTimer = setTimeout(() => reject(new Error('client.close() did not resolve')), 1000)
+      })
+    ])
+  } finally {
+    clearTimeout(closeTimer)
+  }
 })
 
 test('Connect to h2c server over a unix domain socket', { skip: process.platform === 'win32' }, async t => {
@@ -140,6 +224,32 @@ test('Connect to h2c server over a unix domain socket', { skip: process.platform
   })
 })
 
+test('Should pass custom connect function to Client', async t => {
+  const planner = tspl(t, { plan: 3 })
+
+  const connectError = new Error('custom connect error')
+  const socketPath = '/var/run/test.sock'
+  const client = new H2CClient('http://localhost', {
+    socketPath,
+    connect (opts, cb) {
+      planner.strictEqual(opts.socketPath, socketPath)
+      planner.strictEqual(opts.allowH2, true)
+      cb(connectError, null)
+    }
+  })
+
+  t.after(() => client.close())
+
+  client.request({
+    path: '/',
+    method: 'GET'
+  }, (err) => {
+    planner.strictEqual(err, connectError)
+  })
+
+  await planner.completed
+})
+
 test('Should throw if bad useH2c has been passed', async t => {
   t = tspl(t, { plan: 1 })
 
@@ -153,4 +263,64 @@ test('Should throw if bad useH2c has been passed', async t => {
   })
 
   await t.completed
+})
+
+test('Pool with useH2c and connections > 1 should not raise HTTPParserError', async t => {
+  const planner = tspl(t, { plan: 6 })
+
+  const server = createServer((req, res) => {
+    res.writeHead(200)
+    res.end('Hello, world!')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+  const url = `http://localhost:${server.address().port}`
+  const pool = new Pool(url, { useH2c: true, connections: 2 })
+
+  t.after(() => pool.close())
+  t.after(() => server.close())
+
+  const responses = await Promise.all([
+    pool.request({ path: '/test1', method: 'GET' }),
+    pool.request({ path: '/test2', method: 'GET' }),
+    pool.request({ path: '/test3', method: 'GET' })
+  ])
+
+  for (const response of responses) {
+    planner.equal(response.statusCode, 200)
+    planner.equal(await response.body.text(), 'Hello, world!')
+  }
+
+  await planner.completed
+})
+
+test('Agent with useH2c and connections > 1 should not raise HTTPParserError', async t => {
+  const planner = tspl(t, { plan: 6 })
+
+  const server = createServer((req, res) => {
+    res.writeHead(200)
+    res.end('Hello, world!')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+  const port = server.address().port
+  const agent = new Agent({ useH2c: true, connections: 2 })
+
+  t.after(() => agent.close())
+  t.after(() => server.close())
+
+  const responses = await Promise.all([
+    request(`http://localhost:${port}/test1`, { dispatcher: agent }),
+    request(`http://localhost:${port}/test2`, { dispatcher: agent }),
+    request(`http://localhost:${port}/test3`, { dispatcher: agent })
+  ])
+
+  for (const response of responses) {
+    planner.equal(response.statusCode, 200)
+    planner.equal(await response.body.text(), 'Hello, world!')
+  }
+
+  await planner.completed
 })

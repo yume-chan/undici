@@ -24,17 +24,17 @@ permissions:
 jobs:
   test:
     name: Test ${{ inputs.codecov == true && 'and Coverage ' || '' }}with Node.js ${{ inputs.node-version }} on ${{ inputs.runs-on }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ inputs.runs-on == 'windows-latest' && 30 || 20 }}
     runs-on: ${{ inputs.runs-on }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           submodules: recursive
 
       - name: Setup Node.js@${{ inputs.node-version }}
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ inputs.node-version }}
 
@@ -47,7 +47,7 @@ jobs:
           echo git: $(git --version)
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Print installed dependencies
         run: npm ls --all
@@ -110,12 +110,12 @@ jobs:
           NODE_V8_COVERAGE: ${{ inputs.codecov == true && './coverage/tmp' || '' }} 
           UNDICI_NO_WASM_SIMD: ${{ inputs['no-wasm-simd'] }}
       
-      - name: Test cache-interceptor  ${{ inputs.node-version != '20' && 'with' || 'without' }} sqlite
+      - name: Test cache-interceptor with sqlite
         run: npm run test:cache-interceptor
         id: test-cache-interceptor
         env:
           CI: true
-          NODE_OPTIONS: ${{ inputs.node-version != '20' && '--experimental-sqlite' || '' }}
+          NODE_OPTIONS: --experimental-sqlite
           NODE_V8_COVERAGE: ${{ inputs.codecov == true && './coverage/tmp' || '' }} 
           UNDICI_NO_WASM_SIMD: ${{ inputs['no-wasm-simd'] }}
 
@@ -198,6 +198,6 @@ jobs:
       
       - name: Upload coverage report to Codecov
         if: inputs.codecov == true
-        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

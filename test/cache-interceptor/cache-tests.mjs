@@ -27,6 +27,14 @@ import { runtimeFeatures } from '../../lib/util/runtime-features.js'
  *  dependencyFailed: number,
  *  retried: number
  * }} TestStats
+ *
+ * @typedef {{
+ *  code: number | null,
+ *  signal: NodeJS.Signals | null,
+ *  stdout: Buffer[],
+ *  environment: TestEnvironment,
+ *  port: number
+ * }} WorkerResult
  */
 
 const CLI_OPTIONS = parseArgs({
@@ -72,8 +80,16 @@ const BASE_TEST_ENVIRONMENT = {
     '304-etag-update-response-X-Content-Foo',
     '304-etag-update-response-X-Test-Header',
 
-    // We just trim whatever's in the decimal place off (i.e. 7200.0 -> 7200)
+    // The hardening treats malformed or duplicate Age values as stale instead
+    // of ignoring them or using the first parseable value.
+    'age-parse-nonnumeric',
+    'age-parse-negative',
     'age-parse-float',
+    'age-parse-prefix',
+    'age-parse-prefix-twoline',
+    'age-parse-dup-0',
+    'age-parse-dup-0-twoline',
+    'age-parse-dup-old',
 
     // Broken?
     'head-200-update',
@@ -120,21 +136,30 @@ const testEnvironments = filterEnvironments(
   buildTestEnvironments(0, [CACHE_TYPES, CACHE_STORES])
 )
 
+// Windows runners intermittently terminate cache-test workers with 0xC0000409
+// when all environments run at the same time. Keep environment workers serial
+// there; each worker still runs the upstream cache-tests concurrently.
+const WORKER_CONCURRENCY = Math.max(1, Number(process.env.CACHE_TEST_WORKER_CONCURRENCY) || (
+  process.platform === 'win32' ? 1 : testEnvironments.length
+))
+
 console.log(`Testing ${testEnvironments.length} environments\n`)
 console.log(`PROTOCOL: ${styleText('gray', PROTOCOL)}`)
+console.log(`WORKERS: ${styleText('gray', `${WORKER_CONCURRENCY}`)}`)
 console.log('')
 
 /**
- * @type {Array<Promise<[number, Array<Buffer>]>>}
+ * @type {Array<() => Promise<WorkerResult>>}
  */
-const results = []
+const jobs = []
 
 // Run all the tests in child processes because the test runner is a bit finicky
 for (let i = 0; i < testEnvironments.length; i++) {
   const environment = testEnvironments[i]
   const port = PORT + i
 
-  const promise = new Promise((resolve) => {
+  const runWorker = () => {
+    const { promise, resolve } = Promise.withResolvers()
     const cacheTestsWorkerProcess = fork(join(import.meta.dirname, 'cache-tests-worker.mjs'), {
       stdio: 'pipe',
       env: {
@@ -154,27 +179,60 @@ for (let i = 0; i < testEnvironments.length; i++) {
       stdout.push(chunk)
     })
 
-    cacheTestsWorkerProcess.stderr.on('error', chunk => {
+    cacheTestsWorkerProcess.stderr.on('data', chunk => {
       stdout.push(chunk)
     })
 
-    cacheTestsWorkerProcess.on('close', code => {
-      resolve([code, stdout])
+    cacheTestsWorkerProcess.on('error', err => {
+      stdout.push(Buffer.from(`${err.stack ?? err.message}\n`))
     })
-  })
 
-  results.push(promise)
+    cacheTestsWorkerProcess.on('close', (code, signal) => {
+      resolve({
+        code,
+        signal,
+        stdout,
+        environment,
+        port
+      })
+    })
+
+    return promise
+  }
+
+  jobs.push(async () => {
+    const result = await runWorker()
+    if (result.signal === null && (result.code === 0 || result.code === 1)) {
+      return result
+    }
+
+    const retryResult = await runWorker()
+    return {
+      ...retryResult,
+      stdout: [
+        ...result.stdout,
+        Buffer.from(`cache-tests worker crashed, retrying once: port=${port} store=${environment.cacheStore ?? 'default'} type=${environment.opts.type ?? 'default'} code=${result.code ?? 'null'} signal=${result.signal ?? 'null'}\n`),
+        ...retryResult.stdout
+      ]
+    }
+  })
 }
 
 // Status code so we can fail CI jobs if we need
 let exitCode = 0
 
 // Print the results of all the results in the order that they exist
-for (const [code, stdout] of await Promise.all(results)) {
-  exitCode = code
+for (const result of await runJobs(jobs, WORKER_CONCURRENCY)) {
+  if (result.code !== 0 || result.signal !== null) {
+    exitCode = result.code ?? 1
+  }
 
-  for (const line of stdout) {
+  for (const line of result.stdout) {
     process.stdout.write(line)
+  }
+
+  if (result.code !== 0 || result.signal !== null) {
+    console.error(`cache-tests worker failed: port=${result.port} store=${result.environment.cacheStore ?? 'default'} type=${result.environment.opts.type ?? 'default'} code=${result.code ?? 'null'} signal=${result.signal ?? 'null'}`)
   }
 
   console.log('')
@@ -217,6 +275,29 @@ function buildTestEnvironments (idx, testOptions) {
   }
 
   return environments
+}
+
+/**
+ * @param {Array<() => Promise<WorkerResult>>} jobs
+ * @param {number} concurrency
+ * @returns {Promise<WorkerResult[]>}
+ */
+async function runJobs (jobs, concurrency) {
+  const results = new Array(jobs.length)
+  let next = 0
+
+  async function worker () {
+    while (next < jobs.length) {
+      const idx = next++
+      results[idx] = await jobs[idx]()
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, jobs.length) }, worker)
+  )
+
+  return results
 }
 
 /**

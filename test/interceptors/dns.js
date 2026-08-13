@@ -11,8 +11,25 @@ const { once } = require('node:events')
 const { tspl } = require('@matteo.collina/tspl')
 const pem = require('@metcoder95/https-pem')
 
-const { interceptors, Agent, request } = require('../..')
+const { interceptors, Agent, Client, Pool, request } = require('../..')
 const { dns } = interceptors
+
+// Helper to check if IPv6 is available for localhost
+// This is called synchronously at test definition time
+function hasIPv6LocalhostSync () {
+  let ipv6Available = false
+  try {
+    const addresses = lookup.sync('localhost', { all: true, family: 6 })
+    ipv6Available = addresses != null && addresses.length > 0 && addresses.some(addr => addr.family === 6)
+  } catch (err) {
+    // If lookup fails, assume IPv6 is not available
+    ipv6Available = false
+  }
+  return ipv6Available
+}
+
+// Check IPv6 availability once at module load time
+const ipv6Available = hasIPv6LocalhostSync()
 
 test('Should validate options', t => {
   t = tspl(t, { plan: 11 })
@@ -419,7 +436,7 @@ test('Should throw when on dual-stack disabled (4)', async t => {
   await t.completed
 })
 
-test('Should throw when on dual-stack disabled (6)', async t => {
+test('Should throw when on dual-stack disabled (6)', { skip: !ipv6Available }, async t => {
   t = tspl(t, { plan: 2 })
 
   let counter = 0
@@ -534,7 +551,7 @@ test('Should automatically resolve IPs (dual stack disabled - 4)', async t => {
   t.equal(await response2.body.text(), 'hello world!')
 })
 
-test('Should automatically resolve IPs (dual stack disabled - 6)', async t => {
+test('Should automatically resolve IPs (dual stack disabled - 6)', { skip: !ipv6Available }, async t => {
   t = tspl(t, { plan: 6 })
 
   let counter = 0
@@ -709,7 +726,7 @@ test('Should we handle TTL (4)', async t => {
   t.equal(lookupCounter, 2)
 })
 
-test('Should we handle TTL (6)', async t => {
+test('Should we handle TTL (6)', { skip: !ipv6Available }, async t => {
   t = tspl(t, { plan: 10 })
 
   const clock = FakeTimers.install()
@@ -2162,4 +2179,76 @@ test('#3951 - Should handle lookup errors correctly', async t => {
     ...requestOptions,
     origin: 'http://localhost'
   }), new Error('lookup error'))
+})
+
+test('#4234 - Should pass Client requests without origin through', async t => {
+  t = tspl(t, { plan: 4 })
+
+  const server = createServer({ joinDuplicateHeaders: true })
+  server.on('request', (req, res) => {
+    t.equal(req.headers.host, `localhost:${server.address().port}`)
+    res.end('hello world!')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+
+  let lookupCount = 0
+  const client = new Client(`http://localhost:${server.address().port}`).compose(dns({
+    lookup: (_origin, _opts, cb) => {
+      lookupCount++
+      cb(new Error('lookup should not run'))
+    }
+  }))
+
+  after(async () => {
+    await client.close()
+    server.close()
+    await once(server, 'close')
+  })
+
+  const response = await client.request({
+    method: 'GET',
+    path: '/'
+  })
+
+  t.equal(response.statusCode, 200)
+  t.equal(await response.body.text(), 'hello world!')
+  t.equal(lookupCount, 0)
+})
+
+test('#4234 - Should pass Pool requests without origin through', async t => {
+  t = tspl(t, { plan: 4 })
+
+  const server = createServer({ joinDuplicateHeaders: true })
+  server.on('request', (req, res) => {
+    t.equal(req.headers.host, `localhost:${server.address().port}`)
+    res.end('hello world!')
+  })
+
+  server.listen(0)
+  await once(server, 'listening')
+
+  let lookupCount = 0
+  const pool = new Pool(`http://localhost:${server.address().port}`).compose(dns({
+    lookup: (_origin, _opts, cb) => {
+      lookupCount++
+      cb(new Error('lookup should not run'))
+    }
+  }))
+
+  after(async () => {
+    await pool.close()
+    server.close()
+    await once(server, 'close')
+  })
+
+  const response = await pool.request({
+    method: 'GET',
+    path: '/'
+  })
+
+  t.equal(response.statusCode, 200)
+  t.equal(await response.body.text(), 'hello world!')
+  t.equal(lookupCount, 0)
 })

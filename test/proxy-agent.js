@@ -4,11 +4,13 @@ const { tspl } = require('@matteo.collina/tspl')
 const { test, after } = require('node:test')
 const diagnosticsChannel = require('node:diagnostics_channel')
 const { request, fetch, setGlobalDispatcher, getGlobalDispatcher } = require('..')
-const { InvalidArgumentError, SecureProxyConnectionError } = require('../lib/core/errors')
+const { InvalidArgumentError, ConnectTimeoutError, SecureProxyConnectionError } = require('../lib/core/errors')
 const ProxyAgent = require('../lib/dispatcher/proxy-agent')
 const Pool = require('../lib/dispatcher/pool')
 const { createServer } = require('node:http')
 const https = require('node:https')
+const http2 = require('node:http2')
+const net = require('node:net')
 const { Socket } = require('node:net')
 const { createProxy } = require('proxy')
 
@@ -119,6 +121,66 @@ test('should accept string, URL and object as options', (t) => {
   t.doesNotThrow(() => new ProxyAgent('http://example.com'))
   t.doesNotThrow(() => new ProxyAgent(new URL('http://example.com')))
   t.doesNotThrow(() => new ProxyAgent({ uri: 'http://example.com' }))
+})
+
+test('ProxyAgent forwards connectTimeout to the proxy connector', async (t) => {
+  t = tspl(t, { plan: 4 })
+
+  const originalConnect = net.connect
+  let connect
+  let socket
+  const proxyAgent = new ProxyAgent({
+    uri: 'http://localhost:9000',
+    connectTimeout: 1e3,
+    clientFactory (_origin, options) {
+      connect = options.connect
+      return {
+        close () {
+          return Promise.resolve()
+        },
+        destroy () {
+          return Promise.resolve()
+        }
+      }
+    }
+  })
+
+  after(() => proxyAgent.close())
+
+  try {
+    net.connect = function (options) {
+      return new net.Socket(options)
+    }
+
+    t.ok(typeof connect === 'function')
+
+    const timeout = setTimeout(() => {
+      if (socket && !socket.destroyed) {
+        socket.destroy()
+      }
+      t.fail('connectTimeout was not forwarded to the proxy connector')
+    }, 2e3)
+
+    await new Promise((resolve, reject) => {
+      socket = connect({ hostname: 'localhost', protocol: 'http:', port: 9000 }, (err) => {
+        try {
+          t.ok(err instanceof ConnectTimeoutError)
+          t.strictEqual(err.code, 'UND_ERR_CONNECT_TIMEOUT')
+          t.strictEqual(err.message, 'Connect Timeout Error (attempted address: localhost:9000, timeout: 1000ms)')
+          clearTimeout(timeout)
+          resolve()
+        } catch (error) {
+          clearTimeout(timeout)
+          reject(error)
+        }
+      })
+    })
+  } finally {
+    net.connect = originalConnect
+    if (socket && !socket.destroyed) {
+      socket.destroy()
+    }
+  }
 })
 
 test('use proxy-agent to connect through proxy (keep alive)', async (t) => {
@@ -362,6 +424,88 @@ test('use proxy-agent to connect through proxy with basic auth in URL', async (t
   proxyAgent.close()
 })
 
+test('use proxy-agent to connect through proxy with username-only auth in URL', async (t) => {
+  t = tspl(t, { plan: 6 })
+  const server = await buildServer()
+  const proxy = await buildProxy()
+
+  const serverUrl = `http://localhost:${server.address().port}`
+  const proxyUrl = new URL(`http://user:@localhost:${proxy.address().port}`)
+  const proxyAgent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: false })
+  const parsedOrigin = new URL(serverUrl)
+
+  proxy.authenticate = function (req) {
+    t.ok(true, 'authentication should be called')
+    return req.headers['proxy-authorization'] === `Basic ${Buffer.from('user:').toString('base64')}`
+  }
+  proxy.on('connect', () => {
+    t.fail('proxy tunnel should not be established')
+  })
+
+  server.on('request', (req, res) => {
+    t.strictEqual(req.url, '/hello?foo=bar')
+    t.strictEqual(req.headers.host, parsedOrigin.host, 'should not use proxyUrl as host')
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ hello: 'world' }))
+  })
+
+  const {
+    statusCode,
+    headers,
+    body
+  } = await request(serverUrl + '/hello?foo=bar', { dispatcher: proxyAgent })
+  const json = await body.json()
+
+  t.strictEqual(statusCode, 200)
+  t.deepStrictEqual(json, { hello: 'world' })
+  t.strictEqual(headers.connection, 'keep-alive', 'should remain the connection open')
+
+  server.close()
+  proxy.close()
+  proxyAgent.close()
+})
+
+test('use proxy-agent to connect through proxy with username-only auth in URL without colon', async (t) => {
+  t = tspl(t, { plan: 6 })
+  const server = await buildServer()
+  const proxy = await buildProxy()
+
+  const serverUrl = `http://localhost:${server.address().port}`
+  const proxyUrl = new URL(`http://user@localhost:${proxy.address().port}`)
+  const proxyAgent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: false })
+  const parsedOrigin = new URL(serverUrl)
+
+  proxy.authenticate = function (req) {
+    t.ok(true, 'authentication should be called')
+    return req.headers['proxy-authorization'] === `Basic ${Buffer.from('user:').toString('base64')}`
+  }
+  proxy.on('connect', () => {
+    t.fail('proxy tunnel should not be established')
+  })
+
+  server.on('request', (req, res) => {
+    t.strictEqual(req.url, '/hello?foo=bar')
+    t.strictEqual(req.headers.host, parsedOrigin.host, 'should not use proxyUrl as host')
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ hello: 'world' }))
+  })
+
+  const {
+    statusCode,
+    headers,
+    body
+  } = await request(serverUrl + '/hello?foo=bar', { dispatcher: proxyAgent })
+  const json = await body.json()
+
+  t.strictEqual(statusCode, 200)
+  t.deepStrictEqual(json, { hello: 'world' })
+  t.strictEqual(headers.connection, 'keep-alive', 'should remain the connection open')
+
+  server.close()
+  proxy.close()
+  proxyAgent.close()
+})
+
 test('use proxy-agent to connect through proxy with basic auth in URL with tunneling enabled', async (t) => {
   t = tspl(t, { plan: 7 })
   const server = await buildServer()
@@ -375,6 +519,47 @@ test('use proxy-agent to connect through proxy with basic auth in URL with tunne
   proxy.authenticate = function (req, fn) {
     t.ok(true, 'authentication should be called')
     return req.headers['proxy-authorization'] === `Basic ${Buffer.from('user:pass').toString('base64')}`
+  }
+  proxy.on('connect', () => {
+    t.ok(true, 'proxy should be called')
+  })
+
+  server.on('request', (req, res) => {
+    t.strictEqual(req.url, '/hello?foo=bar')
+    t.strictEqual(req.headers.host, parsedOrigin.host, 'should not use proxyUrl as host')
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ hello: 'world' }))
+  })
+
+  const {
+    statusCode,
+    headers,
+    body
+  } = await request(serverUrl + '/hello?foo=bar', { dispatcher: proxyAgent })
+  const json = await body.json()
+
+  t.strictEqual(statusCode, 200)
+  t.deepStrictEqual(json, { hello: 'world' })
+  t.strictEqual(headers.connection, 'keep-alive', 'should remain the connection open')
+
+  server.close()
+  proxy.close()
+  proxyAgent.close()
+})
+
+test('use proxy-agent to connect through proxy with username-only auth in URL with tunneling enabled', async (t) => {
+  t = tspl(t, { plan: 7 })
+  const server = await buildServer()
+  const proxy = await buildProxy()
+
+  const serverUrl = `http://localhost:${server.address().port}`
+  const proxyUrl = new URL(`http://user:@localhost:${proxy.address().port}`)
+  const proxyAgent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: true })
+  const parsedOrigin = new URL(serverUrl)
+
+  proxy.authenticate = function (req) {
+    t.ok(true, 'authentication should be called')
+    return req.headers['proxy-authorization'] === `Basic ${Buffer.from('user:').toString('base64')}`
   }
   proxy.on('connect', () => {
     t.ok(true, 'proxy should be called')
@@ -717,7 +902,7 @@ test('use proxy-agent with setGlobalDispatcher', async (t) => {
 
   const serverUrl = `http://localhost:${server.address().port}`
   const proxyUrl = `http://localhost:${proxy.address().port}`
-  const proxyAgent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: false })
+  const proxyAgent = new ProxyAgent({ uri: proxyUrl })
   const parsedOrigin = new URL(serverUrl)
   setGlobalDispatcher(proxyAgent)
 
@@ -801,7 +986,7 @@ test('ProxyAgent correctly sends headers when using fetch - #1355, #1623', async
   const serverUrl = `http://localhost:${server.address().port}`
   const proxyUrl = `http://localhost:${proxy.address().port}`
 
-  const proxyAgent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: false })
+  const proxyAgent = new ProxyAgent({ uri: proxyUrl })
   setGlobalDispatcher(proxyAgent)
 
   after(() => setGlobalDispatcher(defaultDispatcher))
@@ -911,7 +1096,7 @@ test('should throw when proxy does not return 200', async (t) => {
     return false
   }
 
-  const proxyAgent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: false })
+  const proxyAgent = new ProxyAgent({ uri: proxyUrl })
   try {
     await request(serverUrl, { dispatcher: proxyAgent })
     t.fail()
@@ -1085,6 +1270,96 @@ test('Proxy via HTTPS to HTTPS endpoint', async (t) => {
   })
 
   server.close()
+  proxy.close()
+  proxyAgent.close()
+})
+
+test('Proxy via HTTPS to HTTP endpoint forwards without tunneling by default', async (t) => {
+  t = tspl(t, { plan: 4 })
+  const server = await buildServer()
+  const proxy = await buildSSLProxy()
+
+  const serverUrl = `http://localhost:${server.address().port}`
+  const proxyUrl = `https://localhost:${proxy.address().port}`
+  const proxyAgent = new ProxyAgent({
+    uri: proxyUrl,
+    proxyTls: {
+      ca: [
+        certs.root.crt
+      ],
+      servername: 'proxy'
+    }
+  })
+
+  server.on('request', function (req, res) {
+    t.ok(!req.connection.encrypted)
+    const headers = { host: req.headers.host, connection: req.headers.connection }
+    res.end(JSON.stringify(headers))
+  })
+
+  server.on('secureConnection', () => {
+    t.fail('server is http')
+  })
+
+  proxy.on('secureConnection', () => {
+    t.ok(true, 'TLS handshake to the proxy must still happen')
+  })
+
+  proxy.on('connect', () => {
+    t.fail('should not tunnel plain HTTP through an HTTPS proxy by default')
+  })
+
+  proxy.on('request', function (req) {
+    const bits = { method: req.method, url: req.url }
+    t.deepStrictEqual(bits, {
+      method: 'GET',
+      url: `${serverUrl}/`
+    })
+  })
+
+  const data = await request(serverUrl, { dispatcher: proxyAgent })
+  const json = await data.body.json()
+  t.deepStrictEqual(json, {
+    host: `localhost:${server.address().port}`,
+    connection: 'keep-alive'
+  })
+
+  server.close()
+  proxy.close()
+  proxyAgent.close()
+})
+
+test('Proxy via HTTPS to HTTP endpoint uses HTTP/1.1 when proxy also supports HTTP/2', async (t) => {
+  t = tspl(t, { plan: 4 })
+  const proxy = await buildH2CapableSSLProxy()
+
+  const serverUrl = 'http://example.com/'
+  const proxyUrl = `https://localhost:${proxy.address().port}`
+  const proxyAgent = new ProxyAgent({
+    uri: proxyUrl,
+    proxyTls: {
+      ca: [
+        certs.root.crt
+      ],
+      servername: 'proxy'
+    }
+  })
+
+  proxy.on('stream', (stream) => {
+    t.fail('non-tunneled HTTP forwarding must not negotiate HTTP/2')
+    stream.close()
+  })
+
+  proxy.on('request', function (req, res) {
+    t.strictEqual(req.httpVersion, '1.1')
+    t.strictEqual(req.method, 'GET')
+    t.strictEqual(req.url, serverUrl)
+    res.end('ok')
+  })
+
+  const data = await request(serverUrl, { dispatcher: proxyAgent })
+  t.strictEqual(await data.body.text(), 'ok')
+
   proxy.close()
   proxyAgent.close()
 })
@@ -1390,6 +1665,23 @@ function buildSSLProxy () {
 
   return new Promise((resolve) => {
     const server = createProxy(https.createServer(serverOptions))
+    server.listen(0, () => resolve(server))
+  })
+}
+
+function buildH2CapableSSLProxy () {
+  const serverOptions = {
+    ca: [
+      certs.root.crt
+    ],
+    key: certs.proxy.key,
+    cert: certs.proxy.crt,
+    allowHTTP1: true,
+    joinDuplicateHeaders: true
+  }
+
+  return new Promise((resolve) => {
+    const server = http2.createSecureServer(serverOptions)
     server.listen(0, () => resolve(server))
   })
 }

@@ -3,10 +3,11 @@
 const { createServer } = require('node:http')
 const { describe, test, after } = require('node:test')
 const { once } = require('node:events')
-const { strictEqual } = require('node:assert')
+const { strictEqual, notStrictEqual } = require('node:assert')
 const { setTimeout: sleep } = require('node:timers/promises')
 const diagnosticsChannel = require('node:diagnostics_channel')
 const { Client, interceptors } = require('../../index')
+const { makeDeduplicationKey } = require('../../lib/util/cache')
 
 describe('Deduplicate Interceptor', () => {
   test('deduplicates concurrent requests for the same resource', async () => {
@@ -1192,20 +1193,18 @@ describe('Deduplicate Interceptor', () => {
       path: '/'
     }
 
-    const firstResponsePromise = client.request(request)
+    const res1 = await client.request(request)
 
-    // Wait until the first response starts streaming body data.
-    await sleep(20)
+    // Wait for the first chunk of body data to actually arrive on the client side
+    // so that responseDataStarted is guaranteed to be true.
+    await once(res1.body, 'readable')
 
-    const [res1, res2] = await Promise.all([
-      firstResponsePromise,
-      client.request(request)
-    ])
+    // Now send the second request — deduplication must be skipped because
+    // body streaming has already started on the primary handler.
+    const res2 = await client.request(request)
 
-    const [body1, body2] = await Promise.all([
-      res1.body.text(),
-      res2.body.text()
-    ])
+    const body1 = await res1.body.text()
+    const body2 = await res2.body.text()
 
     strictEqual(requestsToOrigin, 2)
     strictEqual(body1, 'chunk-1chunk-2')
@@ -1248,16 +1247,16 @@ describe('Deduplicate Interceptor', () => {
 
     const slowWaitingHandlerErrorPromise = new Promise((resolve, reject) => {
       client.dispatch(request, {
-        onConnect () {},
-        onHeaders () {},
-        onData () {
+        onRequestStart () {},
+        onResponseStart () {},
+        onResponseData (controller) {
           // Pause the waiting handler immediately and never resume it.
-          return false
+          controller.pause()
         },
-        onComplete () {
+        onResponseEnd () {
           reject(new Error('Expected paused waiting handler to fail'))
         },
-        onError (err) {
+        onResponseError (_controller, err) {
           resolve(err)
         }
       })
@@ -1290,5 +1289,63 @@ describe('Deduplicate Interceptor', () => {
       name: 'TypeError',
       message: 'expected opts.excludeHeaderNames to be an array, got string'
     })
+  })
+
+  test('makeDeduplicationKey does not collide when header values contain delimiters', () => {
+    // Regression test for https://github.com/nodejs/undici/issues/5012
+    // Previously, headers {a:"x:b=y"} and {a:"x", b:"y"} produced the same key
+    const key1 = makeDeduplicationKey({
+      origin: 'https://example.com',
+      method: 'GET',
+      path: '/',
+      headers: { a: 'x:b=y' }
+    })
+
+    const key2 = makeDeduplicationKey({
+      origin: 'https://example.com',
+      method: 'GET',
+      path: '/',
+      headers: { a: 'x', b: 'y' }
+    })
+
+    notStrictEqual(key1, key2)
+  })
+
+  test('makeDeduplicationKey produces same key for identical headers', () => {
+    const key1 = makeDeduplicationKey({
+      origin: 'https://example.com',
+      method: 'GET',
+      path: '/',
+      headers: { b: '2', a: '1' }
+    })
+
+    const key2 = makeDeduplicationKey({
+      origin: 'https://example.com',
+      method: 'GET',
+      path: '/',
+      headers: { a: '1', b: '2' }
+    })
+
+    strictEqual(key1, key2)
+  })
+
+  test('makeDeduplicationKey respects excludeHeaders', () => {
+    const excludeHeaders = new Set(['x-request-id'])
+
+    const key1 = makeDeduplicationKey({
+      origin: 'https://example.com',
+      method: 'GET',
+      path: '/',
+      headers: { accept: 'text/html', 'x-request-id': '111' }
+    }, excludeHeaders)
+
+    const key2 = makeDeduplicationKey({
+      origin: 'https://example.com',
+      method: 'GET',
+      path: '/',
+      headers: { accept: 'text/html', 'x-request-id': '222' }
+    }, excludeHeaders)
+
+    strictEqual(key1, key2)
   })
 })

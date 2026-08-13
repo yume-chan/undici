@@ -10,10 +10,11 @@ const { Pool, Client, fetch, Agent, setGlobalDispatcher } = require('..')
 
 const { makeParallelRequests, printResults } = require('./_util')
 
-let nodeFetch
+const { cronometro } = require('cronometro')
+const { default: nodeFetch } = require('node-fetch')
 const axios = require('axios')
-let superagent
-let got
+const _superagent = require('superagent')
+const { default: got } = require('got')
 
 const { promisify } = require('node:util')
 const request = promisify(require('request'))
@@ -86,6 +87,9 @@ const superagentAgent = new http.Agent({
   maxSockets: connections
 })
 
+// https://github.com/ladjs/superagent/issues/1540#issue-561464561
+const superagent = _superagent.agent().use((req) => req.agent(superagentAgent))
+
 const undiciOptions = {
   path: '/',
   method: 'GET',
@@ -102,13 +106,30 @@ const dispatcher = new Class(httpBaseOptions.url, {
   ...dest
 })
 
-setGlobalDispatcher(new Agent({
+const globalDispatcher = new Agent({
   pipelining,
   connections,
   connect: {
     rejectUnauthorized: false
   }
-}))
+})
+
+setGlobalDispatcher(globalDispatcher)
+
+async function cleanup () {
+  httpNoKeepAliveOptions.agent.destroy()
+  httpKeepAliveOptions.agent.destroy()
+  axiosAgent.destroy()
+  fetchAgent.destroy()
+  gotAgent.destroy()
+  requestAgent.destroy()
+  superagentAgent.destroy()
+
+  await Promise.allSettled([
+    dispatcher.destroy(),
+    globalDispatcher.destroy()
+  ])
+}
 
 class SimpleRequest {
   constructor (resolve) {
@@ -119,21 +140,25 @@ class SimpleRequest {
     }).on('finish', resolve)
   }
 
-  onConnect (abort) { }
-
-  onHeaders (statusCode, headers, resume) {
-    this.dst.on('drain', resume)
+  onRequestStart (controller) {
+    this.controller = controller
   }
 
-  onData (chunk) {
-    return this.dst.write(chunk)
+  onResponseStart (controller, statusCode, headers, statusText) {
+    this.dst.on('drain', () => controller.resume())
   }
 
-  onComplete () {
+  onResponseData (controller, chunk) {
+    if (this.dst.write(chunk) === false) {
+      controller.pause()
+    }
+  }
+
+  onResponseEnd (controller, trailers) {
     this.dst.end()
   }
 
-  onError (err) {
+  onResponseError (controller, err) {
     throw err
   }
 }
@@ -262,17 +287,14 @@ if (process.env.PORT) {
   }
 
   const gotOptions = {
-    url: dest.url,
     method: 'GET',
     agent: {
       http: gotAgent
-    },
-    // avoid body processing
-    isStream: true
+    }
   }
   experiments.got = () => {
     return makeParallelRequests(resolve => {
-      got(gotOptions).pipe(new Writable({
+      got.stream(dest.url, gotOptions).pipe(new Writable({
         write (chunk, encoding, callback) {
           callback()
         }
@@ -307,18 +329,17 @@ if (process.env.PORT) {
   }
 }
 
-async function main () {
-  const { cronometro } = await import('cronometro')
-  const _nodeFetch = await import('node-fetch')
-  nodeFetch = _nodeFetch.default
-  const _got = await import('got')
-  got = _got.default
-  const _superagent = await import('superagent')
-  // https://github.com/ladjs/superagent/issues/1540#issue-561464561
-  superagent = _superagent.agent().use((req) => req.agent(superagentAgent))
+function main () {
+  // cronometro runs each benchmark in a worker, so attach cleanup to every
+  // test before the worker exits.
+  const tests = Object.fromEntries(
+    Object.entries(experiments).map(([name, test]) => {
+      return [name, { test, after: cleanup }]
+    })
+  )
 
   cronometro(
-    experiments,
+    tests,
     {
       iterations,
       errorThreshold,
@@ -330,7 +351,7 @@ async function main () {
       }
 
       printResults(results)
-      dispatcher.destroy()
+      cleanup()
     }
   )
 }

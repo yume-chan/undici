@@ -9,6 +9,8 @@ const { isMainThread } = require('node:worker_threads')
 
 const { Pool, Client, fetch, Agent, setGlobalDispatcher } = require('..')
 
+const { cronometro } = require('cronometro')
+
 const ca = readFileSync(path.join(__dirname, '..', 'test', 'fixtures', 'ca.pem'), 'utf8')
 const servername = 'agent1'
 
@@ -107,21 +109,25 @@ class SimpleRequest {
     }).on('finish', resolve)
   }
 
-  onConnect (abort) { }
-
-  onHeaders (statusCode, headers, resume) {
-    this.dst.on('drain', resume)
+  onRequestStart (controller) {
+    this.controller = controller
   }
 
-  onData (chunk) {
-    return this.dst.write(chunk)
+  onResponseStart (controller, statusCode, headers, statusText) {
+    this.dst.on('drain', () => controller.resume())
   }
 
-  onComplete () {
+  onResponseData (controller, chunk) {
+    if (this.dst.write(chunk) === false) {
+      controller.pause()
+    }
+  }
+
+  onResponseEnd (controller, trailers) {
     this.dst.end()
   }
 
-  onError (err) {
+  onResponseError (controller, err) {
     throw err
   }
 }
@@ -263,9 +269,7 @@ if (process.env.PORT) {
   }
 }
 
-async function main () {
-  const { cronometro } = await import('cronometro')
-
+function main () {
   cronometro(
     experiments,
     {

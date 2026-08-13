@@ -409,7 +409,24 @@ describe('MockCallHistory - filterCalls with options', () => {
 
     const filtered = mockCallHistoryHello.filterCalls({ path: '/', port: '4000' }, { operator: 'AND' })
 
-    t.assert.strictEqual(filtered.length, 2)
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('should use "AND" operator narrowing through every criterion', t => {
+    t.plan(2)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000', method: 'GET' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000', method: 'POST' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:5000', method: 'GET' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/foo', origin: 'http://localhost:4000', method: 'GET' })
+
+    const andFiltered = mockCallHistoryHello.filterCalls({ path: '/', port: '4000', method: 'GET' }, { operator: 'AND' })
+    t.assert.strictEqual(andFiltered.length, 1)
+
+    const orFiltered = mockCallHistoryHello.filterCalls({ path: '/', port: '4000', method: 'GET' }, { operator: 'OR' })
+    t.assert.strictEqual(orFiltered.length, 4)
   })
 
   test('should use "AND" operator with a lot of filters', t => {
@@ -426,5 +443,140 @@ describe('MockCallHistory - filterCalls with options', () => {
     const filtered = mockCallHistoryHello.filterCalls({ path: '/', port: '1000', host: /localhost/, method: /(POST|PUT)/ }, { operator: 'AND' })
 
     t.assert.strictEqual(filtered.length, 2)
+  })
+})
+
+describe('MockCallHistory - filterCallsByX', () => {
+  test('filterCallsByProtocol should filter logs with a string', t => {
+    t.plan(2)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'https://localhost:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByProtocol('https:')
+
+    t.assert.strictEqual(filtered.length, 1)
+    t.assert.strictEqual(filtered[0]?.path, '/noop')
+  })
+
+  test('filterCallsByProtocol should filter logs with a regexp', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'https://localhost:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByProtocol(/^https:/)
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByHost should filter logs with a string', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'http://127.0.0.1:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByHost('127.0.0.1:4000')
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByPort should filter logs with a string', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:1000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'http://localhost:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByPort('1000')
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByOrigin should filter logs with a regexp', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'https://127.0.0.1:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByOrigin(/localhost/)
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByPath should filter logs with a string', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'http://localhost:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByPath('/noop')
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByHash should filter logs with a string', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/#hello', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'http://localhost:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByHash('#hello')
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByFullUrl should filter logs with a string', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'http://localhost:4000' })
+
+    const filtered = mockCallHistoryHello.filterCallsByFullUrl('http://localhost:4000/noop')
+
+    t.assert.strictEqual(filtered.length, 1)
+  })
+
+  test('filterCallsByMethod should filter logs with a regexp', t => {
+    t.plan(1)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000', method: 'POST' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/noop', origin: 'http://localhost:4000', method: 'GET' })
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/yes', origin: 'http://localhost:4000', method: 'PUT' })
+
+    const filtered = mockCallHistoryHello.filterCallsByMethod(/(POST|PUT)/)
+
+    t.assert.strictEqual(filtered.length, 2)
+  })
+
+  test('filterCallsByX should reflect logs added after the method was bound', t => {
+    t.plan(2)
+
+    const mockCallHistoryHello = new MockCallHistory('hello')
+
+    const before = mockCallHistoryHello.filterCallsByPath('/')
+    t.assert.strictEqual(before.length, 0)
+
+    mockCallHistoryHello[kMockCallHistoryAddLog]({ path: '/', origin: 'http://localhost:4000' })
+
+    const after = mockCallHistoryHello.filterCallsByPath('/')
+    t.assert.strictEqual(after.length, 1)
   })
 })

@@ -166,15 +166,16 @@ test('close should still reconnect', async (t) => {
     const client = new Client(`http://localhost:${server.address().port}`)
     after(() => client.destroy())
 
+    client.once('connect', () => {
+      client[kSocket].destroy()
+    })
+
     t.ok(makeRequest())
     t.ok(!makeRequest())
 
     client.close((err) => {
       t.ifError(err)
       t.strictEqual(client.closed, true)
-    })
-    client.once('connect', () => {
-      client[kSocket].destroy()
     })
 
     function makeRequest () {
@@ -265,17 +266,20 @@ test('close after and destroy should error', async (t) => {
 
 test('close socket and reconnect after maxRequestsPerClient reached', async (t) => {
   t = tspl(t, { plan: 1 })
+  let nextConnectionId = 0
+  const socketToIdMap = new Map()
+  const connectionUsedForRequest = []
 
   const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    connectionUsedForRequest.push(socketToIdMap.get(req.socket))
     res.end(req.url)
   })
 
   after(() => server.close())
 
   server.listen(0, async () => {
-    let connections = 0
-    server.on('connection', () => {
-      connections++
+    server.on('connection', (sock) => {
+      socketToIdMap.set(sock, nextConnectionId++)
     })
     const client = new Client(
       `http://localhost:${server.address().port}`,
@@ -287,7 +291,7 @@ test('close socket and reconnect after maxRequestsPerClient reached', async (t) 
     await makeRequest()
     await makeRequest()
     await makeRequest()
-    t.strictEqual(connections, 2)
+    t.deepEqual(connectionUsedForRequest, [0, 0, 1, 1])
 
     function makeRequest () {
       return client.request({ path: '/', method: 'GET' })
@@ -299,17 +303,20 @@ test('close socket and reconnect after maxRequestsPerClient reached', async (t) 
 
 test('close socket and reconnect after maxRequestsPerClient reached (async)', async (t) => {
   t = tspl(t, { plan: 1 })
+  let nextConnectionId = 0
+  const socketToIdMap = new Map()
+  const connectionUsedForRequest = []
 
   const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    connectionUsedForRequest.push(socketToIdMap.get(req.socket))
     res.end(req.url)
   })
 
   after(() => server.close())
 
   server.listen(0, async () => {
-    let connections = 0
-    server.on('connection', () => {
-      connections++
+    server.on('connection', (sock) => {
+      socketToIdMap.set(sock, nextConnectionId++)
     })
     const client = new Client(
       `http://localhost:${server.address().port}`,
@@ -323,7 +330,7 @@ test('close socket and reconnect after maxRequestsPerClient reached (async)', as
       makeRequest(),
       makeRequest()
     ])
-    t.strictEqual(connections, 2)
+    t.deepEqual(connectionUsedForRequest, [0, 0, 1, 1])
 
     function makeRequest () {
       return client.request({ path: '/', method: 'GET' })

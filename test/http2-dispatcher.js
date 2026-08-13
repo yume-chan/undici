@@ -10,7 +10,8 @@ const { tspl } = require('@matteo.collina/tspl')
 
 const pem = require('@metcoder95/https-pem')
 
-const { Client } = require('..')
+const { Client, errors } = require('..')
+const { kQueue, kRunningIdx } = require('../lib/core/symbols')
 
 test('Dispatcher#Stream', async t => {
   t = tspl(t, { plan: 4 })
@@ -238,8 +239,8 @@ test('Dispatcher#Upgrade - Should throw on non-websocket upgrade', async t => {
       allowH2: true
     })
 
-    after(() => server.close())
     after(() => client.close())
+    after(() => server.close())
 
     try {
       await client.upgrade({ path: '/', protocol: 'any' })
@@ -254,16 +255,197 @@ test('Dispatcher#Upgrade - Should throw on non-websocket upgrade', async t => {
 test('Dispatcher#Upgrade', async t => {
   t = tspl(t, { plan: 3 })
 
-  const server = createSecureServer({ ...(await pem.generate({ opts: { keySize: 2048 } })), settings: { enableConnectProtocol: true } })
+  const server = createSecureServer({
+    ...(await pem.generate({ opts: { keySize: 2048 } })),
+    settings: { enableConnectProtocol: true }
+  })
 
   server.on('stream', (stream, headers) => {
     stream.on('error', err => {
       t.fail(err)
     })
 
-    stream.respond({ ':status': 200 })
+    stream.respond({ ':status': 200 }, { endStream: false })
     stream.resume()
+    stream.once('end', () => {
+      stream.end()
+    })
+  })
 
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+
+  const { socket } = await client.upgrade({ path: '/', protocol: 'websocket' })
+  socket.on('error', () => {})
+
+  t.ok(socket.readable)
+  t.ok(socket.writable)
+  t.strictEqual(socket.closed, false)
+
+  await t.completed
+
+  socket.end()
+  await once(socket, 'close')
+  await client.close()
+  await new Promise((resolve) => server.close(resolve))
+})
+
+test('Dispatcher#Upgrade resumes queued requests after successful WebSocket upgrade', async t => {
+  t = tspl(t, { plan: 3 })
+
+  let postReachedServer = false
+
+  const server = createSecureServer({
+    ...(await pem.generate({ opts: { keySize: 2048 } })),
+    settings: { enableConnectProtocol: true }
+  })
+
+  server.on('stream', (stream, headers) => {
+    stream.on('error', err => {
+      t.fail(err)
+    })
+
+    if (headers[':method'] === 'CONNECT' && headers[':protocol'] === 'websocket') {
+      stream.respond({ ':status': 200 }, { endStream: false })
+      stream.resume()
+      stream.once('end', () => {
+        stream.end()
+      })
+      return
+    }
+
+    if (headers[':method'] === 'POST') {
+      postReachedServer = true
+      stream.resume()
+      stream.respond({ ':status': 200 })
+      stream.end('ok')
+      return
+    }
+
+    stream.close()
+  })
+
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+  after(() => client.close())
+  after(() => server.close())
+
+  const upgrade = client.upgrade({ path: '/', protocol: 'websocket' })
+  const post = client.request({ method: 'POST', path: '/', body: 'hello' })
+
+  const { socket } = await upgrade
+  socket.on('error', () => {})
+  t.strictEqual(socket.closed, false)
+
+  const response = await Promise.race([
+    post,
+    sleep(1_000).then(() => null)
+  ])
+
+  t.ok(postReachedServer)
+  t.strictEqual(response?.statusCode, 200)
+
+  socket.end()
+
+  await t.completed
+})
+
+test('Dispatcher#Upgrade rejects if stream closes before response headers', async t => {
+  t = tspl(t, { plan: 2 })
+
+  const server = createSecureServer({ ...(await pem.generate({ opts: { keySize: 2048 } })), settings: { enableConnectProtocol: true } })
+
+  server.on('stream', (stream) => {
+    stream.close()
+  })
+
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+  after(() => client.close().then(() => { server.close() }))
+
+  const err = await Promise.race([
+    client.upgrade({ path: '/', protocol: 'websocket' }).then(
+      () => new Error('upgrade unexpectedly resolved'),
+      err => err
+    ),
+    sleep(1_000).then(() => new Error('upgrade hung waiting for response headers'))
+  ])
+
+  t.ok(err instanceof errors.InformationalError, err.message)
+  t.match(err.message, /HTTP\/2:/)
+
+  await t.completed
+})
+
+test('Dispatcher#Connect rejects if stream closes before response headers', async t => {
+  t = tspl(t, { plan: 2 })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+
+  server.on('stream', (stream) => {
+    stream.close()
+  })
+
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+  after(() => client.close().then(() => { server.close() }))
+
+  const err = await Promise.race([
+    client.connect({ path: '/' }).then(
+      () => new Error('connect unexpectedly resolved'),
+      err => err
+    ),
+    sleep(1_000).then(() => new Error('connect hung waiting for response headers'))
+  ])
+
+  t.ok(err instanceof errors.InformationalError, err.message)
+  t.match(err.message, /HTTP\/2:/)
+
+  await t.completed
+})
+
+test('Dispatcher#Upgrade rejects websocket upgrade on non-200 HTTP/2 response', async t => {
+  t = tspl(t, { plan: 3 })
+
+  const server = createSecureServer({
+    ...(await pem.generate({ opts: { keySize: 2048 } })),
+    settings: { enableConnectProtocol: true }
+  })
+
+  server.on('stream', (stream, headers) => {
+    stream.on('error', () => {})
+
+    if (headers[':method'] === 'CONNECT' && headers[':protocol'] === 'websocket') {
+      stream.respond({ ':status': 404 })
+      stream.end('not found')
+      return
+    }
+
+    stream.respond({ ':status': 200 })
     stream.end()
   })
 
@@ -277,13 +459,14 @@ test('Dispatcher#Upgrade', async t => {
   })
   after(() => client.close().then(() => { server.close() }))
 
-  const { socket } = await client.upgrade({ path: '/', protocol: 'websocket' })
-
-  t.ok(socket.readable)
-  t.ok(socket.writable)
-  t.strictEqual(socket.closed, false)
-
-  after(() => socket.end())
+  try {
+    await client.upgrade({ path: '/', protocol: 'websocket' })
+    t.fail('client.upgrade() should reject')
+  } catch (err) {
+    t.ok(err instanceof errors.SocketError)
+    t.strictEqual(err.code, 'UND_ERR_SOCKET')
+    t.strictEqual(err.message, 'bad upgrade')
+  }
 
   await t.completed
 })
@@ -428,6 +611,242 @@ test('Should handle h2 request without body', async t => {
   await t.completed
 })
 
+test('Should clear h2 request stream references before completing a response', async t => {
+  t = tspl(t, { plan: 6 })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+
+  server.on('stream', (stream) => {
+    stream.respond({ ':status': 200 }, { waitForTrailers: true })
+    stream.on('wantTrailers', () => {
+      stream.sendTrailers({ 'x-trailer': 'done' })
+    })
+    stream.end('hello h2!')
+  })
+
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+  after(() => client.close())
+
+  let requestStreamIdSymbol = null
+  let requestStreamSymbol = null
+  let requestStreamCleanupSymbol = null
+
+  client.dispatch({
+    path: '/',
+    method: 'GET'
+  }, {
+    onRequestStart () {},
+    onResponseStart () {
+      const request = client[kQueue][client[kRunningIdx]]
+      const symbols = Object.getOwnPropertySymbols(request)
+      requestStreamIdSymbol = symbols.find((symbol) => symbol.description === 'request stream id')
+      requestStreamSymbol = symbols.find((symbol) => symbol.description === 'request stream')
+      requestStreamCleanupSymbol = symbols.find((symbol) => symbol.description === 'request stream cleanup')
+
+      t.ok(requestStreamIdSymbol)
+      t.ok(requestStreamSymbol)
+      t.ok(requestStreamCleanupSymbol)
+    },
+    onResponseData () {
+      return true
+    },
+    onResponseEnd () {
+      const request = client[kQueue][client[kRunningIdx]]
+
+      t.strictEqual(request[requestStreamIdSymbol], null)
+      t.strictEqual(request[requestStreamSymbol], null)
+      t.strictEqual(request[requestStreamCleanupSymbol], null)
+    },
+    onResponseError (_controller, err) {
+      t.ifError(err)
+    }
+  })
+
+  await t.completed
+})
+
+test('Should clear h2 request stream references after abort before response', async t => {
+  t = tspl(t, { plan: 5 })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+
+  server.on('stream', (stream) => {
+    stream.on('error', () => {})
+  })
+
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+  after(() => client.close())
+
+  const abortReason = new Error('abort after h2 stream assigned')
+  let abortRequest = null
+
+  const waitFor = async (fn) => {
+    for (let i = 0; i < 100; i++) {
+      const value = fn()
+      if (value != null) {
+        return value
+      }
+      await sleep(10)
+    }
+    throw new Error('timed out waiting for h2 request stream')
+  }
+
+  const responseError = new Promise(resolve => {
+    client.dispatch({
+      path: '/',
+      method: 'GET'
+    }, {
+      onRequestStart (controller) {
+        abortRequest = controller.abort.bind(controller)
+      },
+      onResponseStart () {
+        t.fail('unexpected response')
+      },
+      onResponseData () {
+        return true
+      },
+      onResponseEnd () {
+        t.fail('unexpected response end')
+      },
+      onResponseError (_controller, err) {
+        resolve(err)
+      }
+    })
+  })
+
+  const {
+    request,
+    requestStreamIdSymbol,
+    requestStreamSymbol,
+    requestStreamCleanupSymbol
+  } = await waitFor(() => {
+    const request = client[kQueue][client[kRunningIdx]]
+    if (request == null) {
+      return null
+    }
+
+    const symbols = Object.getOwnPropertySymbols(request)
+    const requestStreamIdSymbol = symbols.find((symbol) => symbol.description === 'request stream id')
+    const requestStreamSymbol = symbols.find((symbol) => symbol.description === 'request stream')
+    const requestStreamCleanupSymbol = symbols.find((symbol) => symbol.description === 'request stream cleanup')
+
+    if (requestStreamIdSymbol == null || requestStreamSymbol == null || requestStreamCleanupSymbol == null) {
+      return null
+    }
+
+    return {
+      request,
+      requestStreamIdSymbol,
+      requestStreamSymbol,
+      requestStreamCleanupSymbol
+    }
+  })
+
+  t.ok(await waitFor(() => request[requestStreamSymbol]))
+
+  abortRequest = await waitFor(() => abortRequest)
+  abortRequest(abortReason)
+
+  const err = await responseError
+  t.strictEqual(err, abortReason)
+  t.strictEqual(request[requestStreamIdSymbol], null)
+  t.strictEqual(request[requestStreamSymbol], null)
+  t.strictEqual(request[requestStreamCleanupSymbol], null)
+
+  await t.completed
+})
+
+test('Should destroy the h2 stream on abort', async t => {
+  t = tspl(t, { plan: 2 })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+
+  // Never respond, so the stream stays in-flight when we abort it.
+  server.on('stream', (stream) => {
+    stream.on('error', () => {})
+  })
+
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: { rejectUnauthorized: false },
+    allowH2: true
+  })
+  after(() => client.close())
+
+  const abortReason = new Error('abort after h2 stream assigned')
+  let abortRequest = null
+
+  const waitFor = async (fn) => {
+    for (let i = 0; i < 100; i++) {
+      const value = fn()
+      if (value != null) return value
+      await sleep(10)
+    }
+    throw new Error('timed out waiting for h2 request stream')
+  }
+
+  const responseError = new Promise(resolve => {
+    client.dispatch({ path: '/', method: 'GET' }, {
+      onRequestStart (controller) {
+        abortRequest = controller.abort.bind(controller)
+      },
+      onResponseStart () {
+        t.fail('unexpected response')
+      },
+      onResponseData () {
+        return true
+      },
+      onResponseEnd () {
+        t.fail('unexpected response end')
+      },
+      onResponseError (_controller, err) {
+        resolve(err)
+      }
+    })
+  })
+
+  const requestStreamSymbol = await waitFor(() => {
+    const request = client[kQueue][client[kRunningIdx]]
+    if (request == null) return null
+    return Object.getOwnPropertySymbols(request).find(
+      (s) => s.description === 'request stream'
+    )
+  })
+  const stream = await waitFor(
+    () => client[kQueue][client[kRunningIdx]]?.[requestStreamSymbol]
+  )
+
+  abortRequest = await waitFor(() => abortRequest)
+  abortRequest(abortReason)
+
+  // The abort path must destroy the stream synchronously, not just close() it
+  // or defer the destroy: relying on the async 'close' event (or a setImmediate
+  // that never runs while the event loop is stalled) leaks the native
+  // Http2Stream on a busy, long-lived multiplexed session (#5558).
+  t.strictEqual(stream.destroyed, true)
+  t.strictEqual(await responseError, abortReason)
+
+  await t.completed
+})
+
 test('Should only accept valid ping interval values', async t => {
   const planner = tspl(t, { plan: 3 })
 
@@ -511,19 +930,13 @@ test('Should send http2 PING frames', async t => {
     method: 'PUT',
     body: 'hello'
   }, {
-    onConnect () {
-
-    },
-    onHeaders () {
-      return true
-    },
-    onData () {
-      return true
-    },
-    onComplete (trailers) {
+    onRequestStart () {},
+    onResponseStart () {},
+    onResponseData () {},
+    onResponseEnd (_controller, trailers) {
       t.strictEqual(trailers['x-trailer'], 'hello')
     },
-    onError (err) {
+    onResponseError (_controller, err) {
       t.ifError(err)
     }
   })
@@ -588,19 +1001,13 @@ test('Should not send http2 PING frames if interval === 0', async t => {
     method: 'PUT',
     body: 'hello'
   }, {
-    onConnect () {
-
-    },
-    onHeaders () {
-      return true
-    },
-    onData () {
-      return true
-    },
-    onComplete (trailers) {
+    onRequestStart () {},
+    onResponseStart () {},
+    onResponseData () {},
+    onResponseEnd (_controller, trailers) {
       t.strictEqual(trailers['x-trailer'], 'hello')
     },
-    onError (err) {
+    onResponseError (_controller, err) {
       t.ifError(err)
     }
   })
@@ -666,19 +1073,13 @@ test('Should not send http2 PING frames after connection is closed', async t => 
     method: 'PUT',
     body: 'hello'
   }, {
-    onConnect () {
-
-    },
-    onHeaders () {
-      return true
-    },
-    onData () {
-      return true
-    },
-    onComplete (trailers) {
+    onRequestStart () {},
+    onResponseStart () {},
+    onResponseData () {},
+    onResponseEnd (_controller, trailers) {
       t.strictEqual(trailers['x-trailer'], 'hello')
     },
-    onError (err) {
+    onResponseError (_controller, err) {
       t.ifError(err)
     }
   })
@@ -688,4 +1089,74 @@ test('Should not send http2 PING frames after connection is closed', async t => 
   t.equal(pingCounter, 0, 'Expected 0 PING frames to be sent')
 
   await t.completed
+})
+
+test('Should not emit uncaughtException when socket closes after abort', async t => {
+  const assert = tspl(t, { plan: 2 })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+
+  // Never respond, keeping the stream in-flight.
+  server.on('stream', (stream) => {
+    stream.on('error', () => {})
+  })
+
+  t.after(() => {
+    server.close()
+  })
+  await once(server.listen(0), 'listening')
+
+  // Capture any uncaughtException that fires during the test
+  let uncaughtErr = null
+  const originalHandler = process.listeners('uncaughtException').length > 0
+    ? process.listeners('uncaughtException')[0]
+    : null
+  process.removeAllListeners('uncaughtException')
+  const uncaughtHandler = (err) => {
+    uncaughtErr = err
+  }
+  process.on('uncaughtException', uncaughtHandler)
+  t.after(() => {
+    process.removeListener('uncaughtException', uncaughtHandler)
+    if (originalHandler) {
+      process.on('uncaughtException', originalHandler)
+    }
+  })
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: { rejectUnauthorized: false },
+    allowH2: true
+  })
+  t.after(() => client.close())
+
+  const controller = new AbortController()
+
+  const requestPromise = client.request({
+    path: '/',
+    method: 'GET',
+    signal: controller.signal
+  })
+
+  // Abort the request to trigger the abort path
+  controller.abort()
+
+  // Wait for the request to reject
+  try {
+    await requestPromise
+    assert.fail('request should have rejected')
+  } catch (err) {
+    assert.ok(err, 'request rejected')
+  }
+
+  // Now close the server to trigger socket 'end' event,
+  // simulating the CDN closing the connection after abort.
+  // This used to trigger an uncaughtException via onHttp2SocketError.
+  server.close()
+
+  // Wait for any pending async error handling
+  await sleep(500)
+
+  assert.equal(uncaughtErr, null, 'No uncaughtException should have been emitted')
+
+  await assert.completed
 })

@@ -3,7 +3,7 @@
 const { test, after, describe } = require('node:test')
 const { createServer } = require('node:http')
 const { promisify } = require('node:util')
-const { MockAgent, MockClient, setGlobalDispatcher, request } = require('..')
+const { MockAgent, MockClient, getGlobalDispatcher, setGlobalDispatcher, request } = require('..')
 const { kUrl } = require('../lib/core/symbols')
 const { kDispatches } = require('../lib/mock/mock-symbols')
 const { InvalidArgumentError } = require('../lib/core/errors')
@@ -60,9 +60,11 @@ describe('MockClient - dispatch', () => {
       path: '/foo',
       method: 'GET'
     }, {
-      onHeaders: (_statusCode, _headers, resume) => resume(),
-      onData: () => {},
-      onComplete: () => {}
+      onRequestStart () {},
+      onResponseStart () {},
+      onResponseData () {},
+      onResponseEnd () {},
+      onResponseError () {}
     }))
   })
 
@@ -95,9 +97,11 @@ describe('MockClient - dispatch', () => {
       path: '/foo',
       method: 'GET'
     }, {
-      onHeaders: (_statusCode, _headers, resume) => { throw new Error('kaboom') },
-      onData: () => {},
-      onComplete: () => {}
+      onRequestStart () {},
+      onResponseStart () { throw new Error('kaboom') },
+      onResponseData () {},
+      onResponseEnd () {},
+      onResponseError () {}
     }), new Error('kaboom'))
   })
 })
@@ -216,7 +220,10 @@ test('MockClient - should be able to set as globalDispatcher', async (t) => {
 
   const mockClient = mockAgent.get(baseUrl)
   t.assert.ok(mockClient instanceof MockClient)
+
+  const originalDispatcher = getGlobalDispatcher()
   setGlobalDispatcher(mockClient)
+  t.after(() => setGlobalDispatcher(originalDispatcher))
 
   mockClient.intercept({
     path: '/foo',
@@ -254,7 +261,6 @@ test('MockClient - should support query params', async (t) => {
 
   const mockClient = mockAgent.get(baseUrl)
   t.assert.ok(mockClient instanceof MockClient)
-  setGlobalDispatcher(mockClient)
 
   const query = {
     pageNum: 1
@@ -267,6 +273,7 @@ test('MockClient - should support query params', async (t) => {
 
   const { statusCode, body } = await request(`${baseUrl}/foo`, {
     method: 'GET',
+    dispatcher: mockClient,
     query
   })
   t.assert.strictEqual(statusCode, 200)
@@ -297,7 +304,6 @@ test('MockClient - should intercept query params with hardcoded path', async (t)
 
   const mockClient = mockAgent.get(baseUrl)
   t.assert.ok(mockClient instanceof MockClient)
-  setGlobalDispatcher(mockClient)
 
   const query = {
     pageNum: 1
@@ -309,6 +315,7 @@ test('MockClient - should intercept query params with hardcoded path', async (t)
 
   const { statusCode, body } = await request(`${baseUrl}/foo`, {
     method: 'GET',
+    dispatcher: mockClient,
     query
   })
   t.assert.strictEqual(statusCode, 200)
@@ -339,7 +346,6 @@ test('MockClient - should intercept query params regardless of key ordering', as
 
   const mockClient = mockAgent.get(baseUrl)
   t.assert.ok(mockClient instanceof MockClient)
-  setGlobalDispatcher(mockClient)
 
   const query = {
     pageNum: 1,
@@ -359,6 +365,7 @@ test('MockClient - should intercept query params regardless of key ordering', as
 
   const { statusCode, body } = await request(`${baseUrl}/foo`, {
     method: 'GET',
+    dispatcher: mockClient,
     query
   })
   t.assert.strictEqual(statusCode, 200)
@@ -473,7 +480,6 @@ test('MockClient - cleans mocks', async (t) => {
 
   const mockClient = mockAgent.get(baseUrl)
   t.assert.ok(mockClient instanceof MockClient)
-  setGlobalDispatcher(mockClient)
 
   mockClient.intercept({
     path: '/foo',
@@ -487,7 +493,8 @@ test('MockClient - cleans mocks', async (t) => {
   t.assert.strictEqual(mockClient[kDispatches].length, 0)
 
   const { statusCode, body } = await request(`${baseUrl}/foo`, {
-    method: 'GET'
+    method: 'GET',
+    dispatcher: mockClient
   })
   t.assert.strictEqual(statusCode, 200)
 

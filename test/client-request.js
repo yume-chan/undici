@@ -154,9 +154,8 @@ test('request dump with abort signal', async (t) => {
         t.ok(stackLines[2].startsWith('at AbortController.abort'))
         t.ok(/client-request.js/.test(stackLines[3]))
         t.ok(stackLines[4].startsWith('at RequestHandler.runInAsyncScope'))
-        t.ok(stackLines[5].startsWith('at RequestHandler.onHeaders'))
-        t.ok(stackLines[6].startsWith('at Request.onHeaders'))
-        server.close()
+        t.ok(stackLines[5].startsWith('at RequestHandler.onResponseStart'))
+        t.ok(stackLines[6].startsWith('at Request.onResponseStart'))
       })
       ac.abort()
     })
@@ -193,9 +192,8 @@ test('request dump with POJO as invalid signal', async (t) => {
         t.ok(stackLines[1].startsWith('at BodyReadable.dump'))
         t.ok(/client-request.js/.test(stackLines[2]))
         t.ok(stackLines[3].startsWith('at RequestHandler.runInAsyncScope'))
-        t.ok(stackLines[4].startsWith('at RequestHandler.onHeaders'))
-        t.ok(stackLines[5].startsWith('at Request.onHeaders'))
-        server.close()
+        t.ok(stackLines[4].startsWith('at RequestHandler.onResponseStart'))
+        t.ok(stackLines[5].startsWith('at Request.onResponseStart'))
       })
     })
   })
@@ -233,9 +231,8 @@ test('request dump with aborted signal', async (t) => {
         t.ok(stackLines[0].startsWith('AbortError: This operation was with purpose aborted'))
         t.ok(/client-request.js/.test(stackLines[1]))
         t.ok(stackLines[2].startsWith('at RequestHandler.runInAsyncScope'))
-        t.ok(stackLines[3].startsWith('at RequestHandler.onHeaders'))
-        t.ok(stackLines[4].startsWith('at Request.onHeaders'))
-        server.close()
+        t.ok(stackLines[3].startsWith('at RequestHandler.onResponseStart'))
+        t.ok(stackLines[4].startsWith('at Request.onResponseStart'))
       })
       ac.abort()
     })
@@ -1520,6 +1517,58 @@ test('request multibyte text with setEncoding', async (t) => {
     })
     body.setEncoding('hex')
     t.deepStrictEqual(data.toString('hex'), await body.text())
+  })
+
+  await t.completed
+})
+
+test('setEncoding(\'utf8\') handles 3-byte UTF-8 characters split across chunks', async (t) => {
+  t = tspl(t, { plan: 2 })
+
+  // CJK character '傳' is 3 bytes: 0xe5, 0x82, 0xb3
+  // Build a payload where this character will be split at the chunk boundary
+  const cjkChar = '傳' // U+50B3, bytes: e5 82 b3
+  const prefix = 'a'.repeat(10) // 10 ASCII bytes
+  const text = prefix + cjkChar + 'end'
+  const buf = Buffer.from(text) // 10 + 3 + 3 = 16 bytes
+
+  // Split at byte 11, which is in the middle of the 3-byte CJK character
+  // prefix (10 bytes) + first byte of '傳' (0xe5) | remaining 2 bytes (0x82 0xb3) + 'end'
+  const chunk1 = buf.subarray(0, 11)
+  const chunk2 = buf.subarray(11)
+
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    // Send raw buffers to ensure the split is exactly where we want it
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+    res.write(chunk1)
+    // Use setTimeout to force separate TCP packets / chunks
+    setTimeout(() => {
+      res.end(chunk2)
+    }, 50)
+  })
+  after(() => {
+    server.closeAllConnections?.()
+    server.close()
+  })
+
+  server.listen(0, async () => {
+    const client = new Client(`http://localhost:${server.address().port}`)
+    after(client.destroy.bind(client))
+
+    const { body } = await client.request({
+      path: '/',
+      method: 'GET'
+    })
+    body.setEncoding('utf8')
+
+    let result = ''
+    for await (const chunk of body) {
+      result += chunk
+    }
+
+    // Must not contain U+FFFD replacement characters
+    t.strictEqual(result.includes('\ufffd'), false, 'should not contain U+FFFD replacement characters')
+    t.strictEqual(result, text, 'decoded text should match original')
   })
 
   await t.completed

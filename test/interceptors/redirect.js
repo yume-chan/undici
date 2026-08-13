@@ -445,7 +445,7 @@ for (const factory of [
     await t.completed
   })
 
-  test('should follow a redirect chain up to the allowed number of times for redirectionLimitReached', async t => {
+  test('should throw when max redirections is reached and throwOnMaxRedirect is enabled', async t => {
     t = tspl(t, { plan: 1 })
 
     const server = await startRedirectingServer()
@@ -461,6 +461,43 @@ for (const factory of [
       } else {
         t.fail(`Unexpected error: ${error.message}`)
       }
+    }
+
+    await t.completed
+  })
+
+  test('should throw when max redirections is reached and throwOnMaxRedirect is set as interceptor default', async t => {
+    t = tspl(t, { plan: 1 })
+
+    const server = await startRedirectingServer()
+
+    const dispatcher = new undici.Agent().compose(
+      redirect({ maxRedirections: 2, throwOnMaxRedirect: true })
+    )
+    after(() => dispatcher.close())
+
+    try {
+      await undici.request(`http://${server}/300`, { dispatcher })
+      t.fail('Did not throw')
+    } catch (error) {
+      t.strictEqual(error.message, 'max redirects')
+    }
+
+    await t.completed
+  })
+
+  test('should not allow invalid throwOnMaxRedirect arguments', async t => {
+    t = tspl(t, { plan: 1 })
+
+    try {
+      await request(t, 'localhost', undefined, 'http://localhost', {
+        method: 'GET',
+        maxRedirections: 1,
+        throwOnMaxRedirect: 'INVALID'
+      })
+      t.fail('Did not throw')
+    } catch (err) {
+      t.strictEqual(err.message, 'throwOnMaxRedirect must be a boolean')
     }
 
     await t.completed
@@ -542,6 +579,32 @@ for (const factory of [
     } = await request(t, server, undefined, `http://${server}/301`, {
       method: 'PUT',
       body: createReadableStream('REQUEST'),
+      maxRedirections: 10
+    })
+
+    const body = await bodyStream.text()
+
+    t.strictEqual(statusCode, 301)
+    t.strictEqual(headers.location, `http://${server}/301/2`)
+    t.strictEqual(body.length, 0)
+
+    await t.completed
+  })
+
+  test('should stop following redirects once async iterable request bodies are disturbed', async t => {
+    t = tspl(t, { plan: 3 })
+
+    const server = await startRedirectingServer()
+
+    const {
+      statusCode,
+      headers,
+      body: bodyStream
+    } = await request(t, server, undefined, `http://${server}/301`, {
+      method: 'PUT',
+      body: (async function * () {
+        yield 'REQUEST'
+      })(),
       maxRedirections: 10
     })
 
@@ -765,6 +828,8 @@ test('same-origin redirect preserves plain object headers with polluted Object.p
     res.end('redirected')
   }).listen(0)
 
+  after(() => server.close())
+
   const originalIterator = Object.prototype[Symbol.iterator]
   // eslint-disable-next-line no-extend-native
   Object.prototype[Symbol.iterator] = function * () {}
@@ -788,8 +853,107 @@ test('same-origin redirect preserves plain object headers with polluted Object.p
       // eslint-disable-next-line no-extend-native
       Object.prototype[Symbol.iterator] = originalIterator
     }
-    server.close()
   }
+})
+
+test('same-origin redirects strip configured headers', async (t) => {
+  const { strictEqual } = tspl(t, { plan: 5 })
+
+  const server = createServer((req, res) => {
+    if (req.url === '/redirect') {
+      strictEqual(req.headers['x-custom'], 'secret')
+      strictEqual(req.headers['x-keep'], 'present')
+
+      res.writeHead(302, {
+        Location: '/final'
+      })
+      res.end()
+      return
+    }
+
+    strictEqual(req.headers['x-custom'], undefined)
+    strictEqual(req.headers['x-keep'], 'present')
+    res.end('redirected')
+  }).listen(0)
+
+  after(() => server.close())
+
+  await once(server, 'listening')
+
+  const dispatcher = new undici.Agent({}).compose(redirect({
+    maxRedirections: 1,
+    stripHeadersOnRedirect: ['X-Custom']
+  }))
+  after(() => dispatcher.close())
+
+  const res = await undici.request(`http://localhost:${server.address().port}/redirect`, {
+    dispatcher,
+    headers: {
+      'X-Custom': 'secret',
+      'X-Keep': 'present'
+    }
+  })
+
+  const text = await res.body.text()
+  strictEqual(text, 'redirected')
+})
+
+test('cross-origin redirects strip configured headers only across origins', async (t) => {
+  const { strictEqual } = tspl(t, { plan: 7 })
+
+  const server1 = createServer((req, res) => {
+    strictEqual(req.headers['x-custom'], undefined)
+    strictEqual(req.headers['x-keep'], 'present')
+    res.end('redirected')
+  }).listen(0)
+
+  const server2 = createServer((req, res) => {
+    if (req.url === '/redirect') {
+      strictEqual(req.headers['x-custom'], 'secret')
+      strictEqual(req.headers['x-keep'], 'present')
+
+      res.writeHead(302, {
+        Location: '/same-origin'
+      })
+      res.end()
+      return
+    }
+
+    strictEqual(req.headers['x-custom'], 'secret')
+    strictEqual(req.headers['x-keep'], 'present')
+
+    res.writeHead(302, {
+      Location: `http://localhost:${server1.address().port}`
+    })
+    res.end()
+  }).listen(0)
+
+  t.after(() => {
+    server1.close()
+    server2.close()
+  })
+
+  await Promise.all([
+    once(server1, 'listening'),
+    once(server2, 'listening')
+  ])
+
+  const dispatcher = new undici.Agent({}).compose(redirect({
+    maxRedirections: 2,
+    stripHeadersOnCrossOriginRedirect: ['X-Custom']
+  }))
+  after(() => dispatcher.close())
+
+  const res = await undici.request(`http://localhost:${server2.address().port}/redirect`, {
+    dispatcher,
+    headers: {
+      'X-Custom': 'secret',
+      'X-Keep': 'present'
+    }
+  })
+
+  const text = await res.body.text()
+  strictEqual(text, 'redirected')
 })
 
 test('Cross-origin redirects clear forbidden headers', async (t) => {

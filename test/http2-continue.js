@@ -43,6 +43,12 @@ test('Should handle h2 continue', async t => {
   })
   after(() => client.close())
 
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
+
   const response = await client.request({
     path: '/',
     method: 'POST',
@@ -62,6 +68,55 @@ test('Should handle h2 continue', async t => {
   t.strictEqual(response.headers['content-type'], 'text/plain; charset=utf-8')
   t.strictEqual(response.headers['x-custom-h2'], 'foo')
   t.strictEqual(Buffer.concat(responseBody).toString('utf-8'), 'hello h2!')
+
+  await t.completed
+})
+
+test('Should deliver an early final response to an Expect: 100-continue request without sending the body', async t => {
+  t = tspl(t, { plan: 4 })
+
+  let requestBodyBytes = 0
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }), () => {})
+
+  server.on('checkContinue', (request, response) => {
+    t.strictEqual(request.headers.expect, '100-continue')
+    request.on('data', chunk => { requestBodyBytes += chunk.length })
+
+    // Answer from the header fields alone; do not send 100 (Continue).
+    response.writeHead(401, { 'content-type': 'text/plain' })
+    response.end('denied')
+  })
+
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    allowH2: true
+  })
+  after(() => client.close())
+
+  client.on('disconnect', () => {
+    if (!client.closed && !client.destroyed) {
+      t.fail('unexpected disconnect')
+    }
+  })
+
+  const response = await client.request({
+    path: '/',
+    method: 'POST',
+    headers: {
+      'content-type': 'text/plain'
+    },
+    body: 'x'.repeat(1024),
+    expectContinue: true
+  })
+
+  t.strictEqual(response.statusCode, 401)
+  t.strictEqual(await response.body.text(), 'denied')
+  t.strictEqual(requestBodyBytes, 0)
 
   await t.completed
 })

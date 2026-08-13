@@ -28,6 +28,7 @@ const {
   deleteCookie,
   getCookies,
   getSetCookies,
+  parseCookie,
   setCookie,
   Headers
 } = require('../..')
@@ -171,6 +172,22 @@ test('Cookie Domain Validation', () => {
       'Invalid first/last char in cookie domain: ' + domain
     )
   })
+})
+
+test('Cookie Unparsed Validation', () => {
+  const parts = [
+    'X-Custom=val; HttpOnly',
+    'Purpose=tracking; SameSite=None; Secure',
+    'HttpOnly; X-Custom=val'
+  ]
+
+  for (const part of parts) {
+    assert.throws(() => setCookie(new Headers(), {
+      name: 'Space',
+      value: 'Cat',
+      unparsed: [part]
+    }))
+  }
 })
 
 test('Cookie Delete', () => {
@@ -600,6 +617,41 @@ test('Set-Cookie parser', () => {
   assert.deepEqual(getSetCookies(headers), [])
 })
 
+test('Set-Cookie parser does not percent-decode cookie values', () => {
+  assert.deepEqual(
+    parseCookie(
+      'token=legit%0d%0aSet-Cookie:%20evil=injected%3B%20Path%3D/'
+    ),
+    {
+      name: 'token',
+      value: 'legit%0d%0aSet-Cookie:%20evil=injected%3B%20Path%3D/'
+    }
+  )
+
+  assert.deepEqual(parseCookie('data=prefix%00suffix'), {
+    name: 'data',
+    value: 'prefix%00suffix'
+  })
+})
+
+test('Set-Cookie parser only accepts exact SameSite values', () => {
+  assert.deepEqual(parseCookie('a=b; SameSite=none'), {
+    name: 'a',
+    value: 'b',
+    sameSite: 'None'
+  })
+
+  assert.deepEqual(parseCookie('a=b; SameSite=StrictLax'), {
+    name: 'a',
+    value: 'b'
+  })
+
+  assert.deepEqual(parseCookie('a=b; SameSite=NoneOfYourBusiness'), {
+    name: 'a',
+    value: 'b'
+  })
+})
+
 test('Cookie setCookie throws if headers is not of type Headers', () => {
   class Headers {
     [Symbol.toStringTag] = 'CustomHeaders'
@@ -708,4 +760,12 @@ test('Cookie deleteCookie does not throw if headers is an instance of undici own
 test('Cookie getCookie does not throw if headers is an instance of the global Headers class', { skip: !globalThis.Headers }, () => {
   const headers = new globalThis.Headers()
   deleteCookie(headers, 'deno')
+})
+
+test('Set-Cookie parser ignores an unparseable Expires', () => {
+  const headers = new Headers({ 'set-cookie': 'id=a3fWa; Expires=not-a-date' })
+  assert.deepEqual(getSetCookies(headers), [{
+    name: 'id',
+    value: 'a3fWa'
+  }])
 })

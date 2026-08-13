@@ -2,15 +2,15 @@
 
 const { tspl } = require('@matteo.collina/tspl')
 const { test, after } = require('node:test')
-const { createSecureServer } = require('node:http2')
-const { once } = require('node:events')
+const { constants, createSecureServer } = require('node:http2')
+const { once, EventEmitter } = require('node:events')
 
 const pem = require('@metcoder95/https-pem')
 
-const { Client } = require('..')
+const { Client, Pool } = require('..')
 
 test('#3046 - GOAWAY Frame', async t => {
-  t = tspl(t, { plan: 10 })
+  t = tspl(t, { plan: 8 })
 
   const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
 
@@ -44,16 +44,15 @@ test('#3046 - GOAWAY Frame', async t => {
   })
   after(() => client.close())
 
+  client.on('connectionError', () => {
+    t.fail('unexpected connectionError')
+  })
+
   client.on('disconnect', (url, disconnectClient, err) => {
     t.ok(url instanceof URL)
     t.deepStrictEqual(disconnectClient, [client])
     t.strictEqual(err.message, 'HTTP/2: "GOAWAY" frame received with code 0')
-  })
-
-  client.on('connectionError', (url, disconnectClient, err) => {
-    t.ok(url instanceof URL)
-    t.deepStrictEqual(disconnectClient, [client])
-    t.strictEqual(err.message, 'HTTP/2: "GOAWAY" frame received with code 0')
+    t.strictEqual(err.code, 'UND_ERR_INFO')
   })
 
   const response = await client.request({
@@ -67,11 +66,7 @@ test('#3046 - GOAWAY Frame', async t => {
   t.strictEqual(response.headers['content-type'], 'text/plain; charset=utf-8')
   t.strictEqual(response.headers['x-custom-h2'], 'hello')
   t.strictEqual(response.statusCode, 200)
-
-  await t.rejects(response.body.text(), {
-    message: 'HTTP/2: "GOAWAY" frame received with code 0',
-    code: 'UND_ERR_SOCKET'
-  })
+  t.strictEqual(await response.body.text(), 'Hello World')
 
   await t.completed
 })
@@ -96,16 +91,16 @@ test('#3753 - Handle GOAWAY Gracefully', async (t) => {
     stream.on('error', () => {})
     if (counter === 9 && session != null) {
       session.goaway()
-      stream.end()
-    } else {
-      stream.respond({
-        'content-type': 'text/plain',
-        ':status': 200
-      })
-      setTimeout(() => {
-        stream.end('hello world')
-      }, 150)
     }
+
+    stream.respond({
+      'content-type': 'text/plain',
+      ':status': 200
+    })
+    setTimeout(() => {
+      if (stream.closed) return
+      stream.end('hello world')
+    }, 150)
   })
 
   after(() => server.close())
@@ -130,7 +125,7 @@ test('#3753 - Handle GOAWAY Gracefully', async (t) => {
     }, (err, response) => {
       if (err) {
         t.strictEqual(err.message, 'HTTP/2: "GOAWAY" frame received with code 0')
-        t.strictEqual(err.code, 'UND_ERR_SOCKET')
+        t.strictEqual(err.code, 'UND_ERR_INFO')
       } else {
         t.strictEqual(response.statusCode, 200)
         ;(async function () {
@@ -138,7 +133,7 @@ test('#3753 - Handle GOAWAY Gracefully', async (t) => {
           try {
             body = await response.body.text()
           } catch (err) {
-            t.strictEqual(err.code, 'UND_ERR_SOCKET')
+            t.fail(err)
             return
           }
           t.strictEqual(body, 'hello world')
@@ -146,6 +141,221 @@ test('#3753 - Handle GOAWAY Gracefully', async (t) => {
       }
     })
   }
+
+  await t.completed
+})
+
+test('#5468 - requeue multiplexed requests after mid-burst GOAWAY', async (t) => {
+  t = tspl(t, { plan: 4 })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+  let firstStream = false
+  let streams = 0
+
+  server.on('stream', (stream) => {
+    stream.on('error', () => {})
+    streams++
+
+    if (!firstStream) {
+      firstStream = true
+      stream.session?.goaway(constants.NGHTTP2_INTERNAL_ERROR, 0)
+      return
+    }
+
+    stream.respond({ ':status': 200 })
+    stream.end('ok')
+  })
+
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const pool = new Pool(`https://localhost:${server.address().port}`, {
+    allowH2: true,
+    connections: 10,
+    connect: {
+      rejectUnauthorized: false
+    }
+  })
+  after(async () => pool.close())
+
+  const requests = 40
+  const codes = {}
+  let ok = 0
+
+  await Promise.all(Array.from({ length: requests }, async () => {
+    try {
+      const response = await pool.request({ path: '/', method: 'GET' })
+      await response.body.dump()
+
+      if (response.statusCode === 200) {
+        ok++
+      }
+    } catch (err) {
+      const code = err?.code || err?.cause?.code || err?.name || 'unknown'
+      codes[code] = (codes[code] || 0) + 1
+    }
+  }))
+
+  t.strictEqual(codes.UND_ERR_INFO, undefined)
+  t.ok((codes.ERR_HTTP2_SESSION_ERROR || 0) <= 2)
+  t.ok(ok >= requests - 2)
+  t.ok(streams >= requests - 1)
+
+  await t.completed
+})
+
+test('#5089 - Handle GOAWAY Gracefully', async (t) => {
+  t = tspl(t, { plan: 7 })
+
+  const server = createSecureServer({
+    ...await pem.generate({
+      opts: { keySize: 2048 }
+    }),
+    settings: {
+      maxConcurrentStreams: 2
+    }
+  })
+  let firstSession = null
+  const sessionCounts = new Map()
+
+  server.on('session', (session) => {
+    sessionCounts.set(session, 0)
+
+    if (firstSession == null) {
+      firstSession = session
+    }
+  })
+
+  server.on('stream', (stream) => {
+    stream.on('error', () => {})
+
+    const count = sessionCounts.get(stream.session) + 1
+    sessionCounts.set(stream.session, count)
+
+    if (stream.session === firstSession && count === 2) {
+      setTimeout(() => {
+        firstSession.goaway()
+      }, 20)
+    }
+
+    stream.respond({
+      'content-type': 'text/plain',
+      ':status': 200
+    })
+    setTimeout(() => {
+      stream.end('hello world')
+    }, 150)
+  })
+
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    connect: {
+      rejectUnauthorized: false
+    },
+    maxConcurrentStreams: 2,
+    pipelining: 10,
+    allowH2: true
+  })
+  after(() => client.close())
+
+  client.on('connectionError', () => {
+    t.fail('unexpected connectionError')
+  })
+
+  client.once('disconnect', (url, disconnectClient, err) => {
+    t.ok(url instanceof URL)
+    t.deepStrictEqual(disconnectClient, [client])
+    t.strictEqual(err.message, 'HTTP/2: "GOAWAY" frame received with code 0')
+    t.strictEqual(err.code, 'UND_ERR_INFO')
+  })
+
+  const results = await Promise.all(Array.from({ length: 6 }, () => client.request({
+    path: '/',
+    method: 'GET',
+    headers: {
+      'x-my-header': 'foo'
+    }
+  }).then(async (response) => {
+    return {
+      statusCode: response.statusCode,
+      body: await response.body.text()
+    }
+  })))
+
+  t.deepStrictEqual([...sessionCounts.values()], [2, 4])
+  t.deepStrictEqual(results.map((result) => result.statusCode), Array(6).fill(200))
+  t.deepStrictEqual(results.map((result) => result.body), Array(6).fill('hello world'))
+
+  await t.completed
+})
+
+test('#5453 - request onto a GOAWAY-rejected session is requeued on a fresh session', async (t) => {
+  t = tspl(t, { plan: 5 })
+
+  const http2 = require('node:http2')
+  const originalConnect = http2.connect
+
+  // A session that has received GOAWAY rejects new streams synchronously.
+  class FakeSession extends EventEmitter {
+    constructor () {
+      super()
+      this.closed = false
+      this.destroyed = false
+    }
+
+    request () {
+      const err = new Error('New streams cannot be created after receiving a GOAWAY')
+      err.code = 'ERR_HTTP2_GOAWAY_SESSION'
+      throw err
+    }
+
+    destroy () {
+      if (this.destroyed) return
+      this.destroyed = true
+      this.emit('close')
+    }
+
+    ref () {}
+    unref () {}
+  }
+
+  const session = new FakeSession()
+  let connectCalls = 0
+  let streams = 0
+
+  http2.connect = function connectStub (...args) {
+    connectCalls++
+    return connectCalls === 1 ? session : originalConnect.apply(this, args)
+  }
+  after(() => { http2.connect = originalConnect })
+
+  const server = createSecureServer(await pem.generate({ opts: { keySize: 2048 } }))
+  server.on('stream', (stream) => {
+    streams++
+    stream.respond({ ':status': 200 })
+    stream.end('ok')
+  })
+  after(() => server.close())
+  await once(server.listen(0), 'listening')
+
+  const client = new Client(`https://localhost:${server.address().port}`, {
+    allowH2: true,
+    connect: { rejectUnauthorized: false }
+  })
+  after(() => client.close())
+
+  const response = await client.request({ path: '/', method: 'GET' })
+  const chunks = []
+  response.body.on('data', chunk => chunks.push(chunk))
+  await once(response.body, 'end')
+
+  t.strictEqual(response.statusCode, 200)
+  t.strictEqual(Buffer.concat(chunks).toString(), 'ok')
+  t.strictEqual(streams, 1)
+  t.strictEqual(connectCalls, 2)
+  t.strictEqual(session.destroyed, true)
 
   await t.completed
 })
