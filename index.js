@@ -7,16 +7,13 @@ const BalancedPool = require('./lib/dispatcher/balanced-pool')
 const RoundRobinPool = require('./lib/dispatcher/round-robin-pool')
 const Agent = require('./lib/dispatcher/agent')
 const Dispatcher1Wrapper = require('./lib/dispatcher/dispatcher1-wrapper')
-const ProxyAgent = require('./lib/dispatcher/proxy-agent')
 const Socks5ProxyAgent = require('./lib/dispatcher/socks5-proxy-agent')
-const EnvHttpProxyAgent = require('./lib/dispatcher/env-http-proxy-agent')
 const RetryAgent = require('./lib/dispatcher/retry-agent')
 const H2CClient = require('./lib/dispatcher/h2c-client')
 const errors = require('./lib/core/errors')
 const util = require('./lib/core/util')
 const { InvalidArgumentError } = errors
 const api = require('./lib/api')
-const buildConnector = require('./lib/core/connect')
 const RetryHandler = require('./lib/handler/retry-handler')
 const { getGlobalDispatcher, setGlobalDispatcher } = require('./lib/global')
 const DecoratorHandler = require('./lib/handler/decorator-handler')
@@ -31,9 +28,7 @@ module.exports.BalancedPool = BalancedPool
 module.exports.RoundRobinPool = RoundRobinPool
 module.exports.Agent = Agent
 module.exports.Dispatcher1Wrapper = Dispatcher1Wrapper
-module.exports.ProxyAgent = ProxyAgent
 module.exports.Socks5ProxyAgent = Socks5ProxyAgent
-module.exports.EnvHttpProxyAgent = EnvHttpProxyAgent
 module.exports.RetryAgent = RetryAgent
 module.exports.H2CClient = H2CClient
 module.exports.RetryHandler = RetryHandler
@@ -54,7 +49,6 @@ module.exports.cacheStores = {
   MemoryCacheStore: require('./lib/cache/memory-cache-store')
 }
 
-module.exports.buildConnector = buildConnector
 module.exports.errors = errors
 module.exports.util = {
   parseHeaders: util.parseHeaders,
@@ -148,7 +142,7 @@ module.exports.fetch = function fetch (init, options = undefined) {
     if (currentFilename) {
       appendFetchStackTrace(err, currentFilename)
     } else if (err && typeof err === 'object') {
-      Error.captureStackTrace(err, module.exports.fetch)
+      Error.captureStackTrace(err, fetch)
     }
     throw err
   })
@@ -198,23 +192,6 @@ module.exports.pipeline = makeDispatcher(api.pipeline)
 module.exports.connect = makeDispatcher(api.connect)
 module.exports.upgrade = makeDispatcher(api.upgrade)
 
-module.exports.Symbols = require('./lib/core/symbols')
-
 const { EventSource } = require('./lib/web/eventsource/eventsource')
 
 module.exports.EventSource = EventSource
-
-function install () {
-  globalThis.fetch = module.exports.fetch
-  globalThis.Headers = module.exports.Headers
-  globalThis.Response = module.exports.Response
-  globalThis.Request = module.exports.Request
-  globalThis.FormData = module.exports.FormData
-  globalThis.WebSocket = module.exports.WebSocket
-  globalThis.CloseEvent = module.exports.CloseEvent
-  globalThis.ErrorEvent = module.exports.ErrorEvent
-  globalThis.MessageEvent = module.exports.MessageEvent
-  globalThis.EventSource = module.exports.EventSource
-}
-
-module.exports.install = install

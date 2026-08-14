@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import aliasPlugin from '@rollup/plugin-alias'
 import commonjsPlugin from '@rollup/plugin-commonjs'
 import injectPlugin from '@rollup/plugin-inject'
@@ -8,7 +10,11 @@ import terser from '@rollup/plugin-terser'
 import { importMetaUrlAssets as importMetaUrlAssetsPlugin } from './scripts/import-meta-url-asset.mjs'
 import cleanPlugin from '@rollup-extras/plugin-clean'
 import { fileURLToPath } from 'node:url'
+import { relative } from 'node:path'
 
+/**
+ * @param {string | URL} specifier
+ */
 function resolve(specifier) {
   return fileURLToPath(new URL(specifier, import.meta.url))
 }
@@ -29,33 +35,73 @@ export default {
       terser({
         ecma: 2020,
         module: true,
+        format: { comments: false },
         compress: { passes: 5 },
-        mangle: false
+        mangle: true
       })
     ],
-    preserveModules: true
+    // preserveModules: true
   },
   external: [
-    'buffer',
-    'events',
     'jssha',
-    'readable-stream'
+    'readable-stream',
+    'unenv/node/buffer',
+    'unenv/node/events',
+    'unenv/node/net',
   ],
   plugins: [
     cleanPlugin(),
     commonjsPlugin({
-      ignoreTryCatch: false,
+      ignoreTryCatch: (id) => {
+        console.log('ignoreTryCatch', id)
+        return false
+      },
       ignoreGlobal: true,
-      esmExternals: true,
-      requireReturnsDefault: 'auto',
+      esmExternals: (id) => {
+        if (id.startsWith('unenv/')) {
+          return true;
+        }
+
+        console.log('esmExternals', id)
+        return false
+      },
+      requireReturnsDefault: (id) => {
+        if (id === 'unenv/node/events') {
+          return true;
+        }
+
+        if (id.startsWith('unenv/')) {
+          return 'namespace';
+        }
+
+        const relativePath = relative(import.meta.dirname, id).replaceAll('\\', '/')
+        if (relativePath === 'browser/assert.js') {
+          return true;
+        }
+
+        if (
+          relativePath.startsWith('browser/') ||
+          relativePath.startsWith('lib/') ||
+          relativePath.startsWith('index.js') ||
+          relativePath.includes('node_modules/unenv')
+        ) {
+          return 'namespace'
+        }
+
+        console.log('requireReturnsDefault', id, relativePath)
+        return false
+      },
       transformMixedEsModules: true,
-      strictRequires: 'auto'
+      defaultIsModuleExports: false,
+      strictRequires: false
     }),
     replace({
       values: {
+        __filename: JSON.stringify(undefined),
+
         'process.env.BROWSER': JSON.stringify(true),
-        'process.version': JSON.stringify('v20.0.0'),
-        'process.versions.node': JSON.stringify('20.0.0'),
+
+        // web/websocket/util.js
         'process.versions.icu': JSON.stringify('75.1')
       },
       preventAssignment: true,
@@ -69,7 +115,7 @@ export default {
         },
         {
           find: /^(node:)?buffer$/,
-          replacement: resolve('./browser/buffer.js')
+          replacement: 'unenv/node/buffer'
         },
         {
           find: /^node:async_hooks$/,
@@ -84,20 +130,16 @@ export default {
           replacement: resolve('./browser/diagnostics_channel.js')
         },
         {
-          find: /^node:events$/,
-          replacement: resolve('./browser/events.js')
+          find: /^(node:)?events$/,
+          replacement: 'unenv/node/events'
         },
         {
           find: /^node:http$/,
           replacement: resolve('./browser/http.js')
         },
         {
-          find: /^node:http2$/,
-          replacement: resolve('./browser/http2.js')
-        },
-        {
           find: /^node:net$/,
-          replacement: resolve('./browser/net.js')
+          replacement: 'unenv/node/net'
         },
         {
           find: /^node:perf_hooks$/,
@@ -144,7 +186,7 @@ export default {
     nodeResolvePlugin({ browser: true, preferBuiltins: false }),
     injectPlugin({
       modules: {
-        Buffer: ['buffer', 'Buffer'],
+        Buffer: ['unenv/node/buffer', 'Buffer'],
         process: resolve('./browser/process.js'),
         global: resolve('./browser/global.js'),
         setTimeout: [resolve('./browser/set-timeout.js'), 'setTimeout'],

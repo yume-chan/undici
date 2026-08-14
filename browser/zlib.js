@@ -58,10 +58,6 @@ export function createInflate() {
   return new Zlib("deflate");
 }
 
-export function createBrotliDecompress() {
-  throw new Error("Brotli is not supported in the browser");
-}
-
 export function createInflateRaw() {
   return new Zlib("deflate-raw");
 }

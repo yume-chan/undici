@@ -2,7 +2,10 @@
 
 [![Node CI](https://github.com/nodejs/undici/actions/workflows/ci.yml/badge.svg)](https://github.com/nodejs/undici/actions/workflows/nodejs.yml) [![neostandard javascript style](https://img.shields.io/badge/neo-standard-7fffff?style=flat\&labelColor=ff80ff)](https://github.com/neostandard/neostandard) [![npm version](https://badge.fury.io/js/undici.svg)](https://badge.fury.io/js/undici) [![codecov](https://codecov.io/gh/nodejs/undici/branch/main/graph/badge.svg?token=yZL6LtXkOA)](https://codecov.io/gh/nodejs/undici)
 
-An HTTP/1.1 client, written from scratch for browsers.
+An HTTP/1.1 client, forked for browsers.
+
+It's not a drop-in replacement for browser's built-in `fetch` API.
+Instead, it allows you to send HTTP and WebSocket requests over a custom connection.
 
 ## Changes in this fork
 
@@ -14,9 +17,9 @@ npm i @yume-chan/undici-browser
 
 ### Create Connection
 
-It's not possible to create TCP socket in browser, so you need to create a custom connector to send and receive data.
-
-For example, you may adapt it to a WebSockify server.
+It's not possible to create TCP socket in browsers,
+so the `buildConnector` export (which uses `node:net` module to create `Socket`s) is removed.
+You must implement your own connection to send and receive data.
 
 ```js
 import { Duplex } from "readable-stream";
@@ -25,10 +28,14 @@ class YourConnector extends Duplex {
   constructor() {
     super({
       read() {
-        this.push(new Uint8Array());
+        // push data received from your connection
+        // `push` can be called outside of `read` method for asynchronous data receiving
+        // Learn more: https://nodejs.org/api/stream.html#implementing-a-readable-stream
+        this.push("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello");
       },
       write(chunk, encoding, callback) {
-        // send chunk
+        // send chunk to your connection
+        // Learn more: https://nodejs.org/api/stream.html#implementing-a-writable-stream
         callback();
       },
     });
@@ -36,53 +43,92 @@ class YourConnector extends Duplex {
 }
 ```
 
-This package uses `readable-stream`, but any Node.js `Duplex`-compatible libraries should work.
+This package uses `readable-stream` to polyfill `node:stream` (because `unenv/node/stream` is too crude),
+but other Node.js polyfills should also work.
+(However, by also using `readable-stream`, you avoid extra dependencies and reduce bundle size.)
 
-### Create Agent
+### Create Dispatcher
 
-Undici supports `Agent`s, which supports custom connectors:
+Undici uses `Dispatcher`s to send requests.
+You must create a `Dispatcher` by passing a `connect` function that creates your connections.
+
+There are 3 main `Dispatcher` classes:
+
+* `Client`: Manages one connection, can send multiple requests over it sequentially using HTTP/1.1 pipelining (disabled by default) or HTTP/2 multiplexing (not available in browsers).
+* `Pool` (also `BalancedPool` and `RoundRobinPool`): Manages multiple `Client`s to the same origin, and can send multiple requests over them concurrently.
+  * Automatically pass down `connect` option when creating `Client`s.
+* `Agent`: Manages multiple `Pool`s to different origins, and can send multiple requests over them concurrently.
+  * Automatically pass down `connect` option when creating `Pool`s and `Client`s.
+
+Usually `Agent` is a universal choice:
 
 ```js
+import { Agent } from '@yume-chan/undici-browser';
+
 const agent = new Agent({
-  async connect(options, callback) {
+  connect(options, callback) {
+    // Standard Node.js style `callback(err, result)`
+    // can be called outside of this function after async operations
     callback(null, new YourConnector());
   },
 });
 ```
 
-### Send Request
+### Send Requests
 
-Then you can send requests using the `Agent`:
+Then you can send requests using the `Dispatcher`:
 
 ```js
+import { request } from '@yume-chan/undici-browser';
+
+// Or other APIs like `fetch`
 const response = await request(`http://www.example.com`, {
   dispatcher: agent,
 });
 const json = await response.body.json();
 ```
 
-Requests without custom `Agent`s will throw an error.
+Or set your `Dispatcher` as the global dispatcher, so you don't need to pass it every time:
+
+```js
+import { setGlobalDispatcher } from '@yume-chan/undici-browser';
+
+setGlobalDispatcher(agent);
+```
+
+If both global dispatcher and `dispatcher` option are not set, an error will be thrown.
 
 ### How does this work
 
-`buffer`, `events`, `jssha`, `readable-stream`, `util` packages are used to polyfill some complex Node.js built-in packages.
+`jssha`, `readable-stream` and `unenv` are used to polyfill complex Node.js built-in modules.
 
-Only the minimal required APIs in other packages are implemented to run Undici.
+Only the minimal required APIs in other modules are implemented to run Undici.
 
 Rollup is used to replace imports and references to them.
 
 ### Bundle
 
-This package externalized all its dependencies, expecting those to be shared with your other dependencies.
+All dependencies are externalized, expecting to be shared with your other dependencies.
 
 This means it doesn't run in browsers directly. A bundler is required to handle the dependencies.
 
-When all dependencies are bundled, the `.js` file is around 380KB, with two `.wasm` files 50KB each.
+With all files bundled and minified (dependencies externalized, not compressed), the `.js` file is 310KB, with two `.wasm` files of 50KB each.
+
+With all dependencies bundled and minified (but not compressed), the `.js` file is 460KB.
+
+This package can be tree-shaken.
 
 ### Other things not working
 
-* `interceptors.dns`: DNS requests are not supported
-* `cacheStores.SqliteCacheStore`: SQLite is not supported
+* No default global dispatcher: All request APIs (`request`, `stream`, `pipeline`, `connect`, `upgrade` and `fetch`) will throw an error if no `dispatcher` is provided in the options, or `setGlobalDispatcher` has been called with a custom dispatcher.
+* TLS: `https:` URLs will also call your `connect` function, but you must implement TLS yourself.
+* HTTP2: h2 requires `node:http2` module, which is not available in browsers. Only HTTP/1.1 is supported.
+* `interceptors.dns`: DNS requests are not supported, export is removed
+* `cacheStores.SqliteCacheStore`: SQLite is not supported, export is removed
+* `ProxyAgent` and `EnvHttpProxyAgent`: Doesn't support custom `connect` function, exports are removed. (`Socks5ProxyAgent` is still available, but you also need to provide a custom `connect` function)
+* `br` (Brotli) and `zstd` (Zstandard) compression:
+  * `fetch` API won't include `br` or `zstd` in `Accept-Encoding` header
+  * `interceptors.decompress` will not decompress `br` or `zstd` responses
 
 ---
 
@@ -373,7 +419,7 @@ const client = new Agent().compose(interceptors.cache({
     maxCount: 1000,
     maxEntrySize: 5 * 1024 * 1024 // 5MB
   }),
-  
+
   // Optional: Specify which HTTP methods to cache (default: ['GET', 'HEAD'])
   methods: ['GET', 'HEAD']
 }));

@@ -66,7 +66,7 @@ export declare namespace Client {
     /** Maximum number of TLS cached sessions used by the built-in connector. Use `0` to disable TLS session caching. Default: `100`. */
     maxCachedSessions?: number;
     /** Connector options passed to `buildConnector`, or a custom connector function. Default: `null`. */
-    connect?: Partial<buildConnector.BuildOptions> | buildConnector.connector;
+    connect: buildConnector.connector;
     /** The maximum number of requests to send over a single connection before it is reset. Use `0` to disable this limit. Default: `null`. */
     maxRequestsPerClient?: number;
     /** Local IP address the socket should connect from. */
