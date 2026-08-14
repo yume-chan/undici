@@ -1,6 +1,3 @@
-import exports from "events";
+import EventEmitter from "events";
 
-Object.defineProperty(exports, "__esModule", { value: true });
-Object.defineProperty(exports, "default", { value: exports });
-
-export default exports;
+export default EventEmitter;

@@ -112,11 +112,11 @@ All dependencies are externalized, expecting to be shared with your other depend
 
 This means it doesn't run in browsers directly. A bundler is required to handle the dependencies.
 
-With all files bundled and minified (dependencies externalized, not compressed), the `.js` file is 310KB, with two `.wasm` files of 50KB each.
+With all files bundled and minified (dependencies externalized, not compressed), the `.js` file is 302KB, with two `.wasm` files of 53KB each.
 
-With all dependencies bundled and minified (but not compressed), the `.js` file is 460KB.
+With all dependencies bundled and minified (but not compressed), the `.js` file is 434KB.
 
-This package can be tree-shaken.
+This package is partially tree-shakable (depending on used modules)
 
 ### Other things not working
 
@@ -125,7 +125,7 @@ This package can be tree-shaken.
 * HTTP2: h2 requires `node:http2` module, which is not available in browsers. Only HTTP/1.1 is supported.
 * `interceptors.dns`: DNS requests are not supported, export is removed
 * `cacheStores.SqliteCacheStore`: SQLite is not supported, export is removed
-* `ProxyAgent` and `EnvHttpProxyAgent`: Doesn't support custom `connect` function, exports are removed. (`Socks5ProxyAgent` is still available, but you also need to provide a custom `connect` function)
+* Proxies: `ProxyAgent`, `EnvHttpProxyAgent` and `Socks5ProxyAgent` don't support custom `connect` function, exports are removed.
 * `br` (Brotli) and `zstd` (Zstandard) compression:
   * `fetch` API won't include `br` or `zstd` in `Accept-Encoding` header
   * `interceptors.decompress` will not decompress `br` or `zstd` responses

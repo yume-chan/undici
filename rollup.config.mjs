@@ -12,6 +12,8 @@ import cleanPlugin from '@rollup-extras/plugin-clean'
 import { fileURLToPath } from 'node:url'
 import { relative } from 'node:path'
 
+const SimulateFullBundle = process.env.SIMULATE_FULL_BUNDLE === 'true'
+
 /**
  * @param {string | URL} specifier
  */
@@ -35,19 +37,18 @@ export default {
       terser({
         ecma: 2020,
         module: true,
-        format: { comments: false },
+        format: { comments: SimulateFullBundle ? false : true },
         compress: { passes: 5 },
-        mangle: true
+        mangle: SimulateFullBundle ? true : false,
       })
     ],
-    // preserveModules: true
+    preserveModules: true
   },
-  external: [
+  external: SimulateFullBundle ? [] : [
+    'buffer',
+    'events',
     'jssha',
-    'readable-stream',
-    'unenv/node/buffer',
-    'unenv/node/events',
-    'unenv/node/net',
+    'readable-stream'
   ],
   plugins: [
     cleanPlugin(),
@@ -57,49 +58,30 @@ export default {
         return false
       },
       ignoreGlobal: true,
-      esmExternals: (id) => {
-        if (id.startsWith('unenv/')) {
-          return true;
-        }
-
-        console.log('esmExternals', id)
-        return false
-      },
+      esmExternals: false,
       requireReturnsDefault: (id) => {
-        if (id === 'unenv/node/events') {
-          return true;
-        }
-
-        if (id.startsWith('unenv/')) {
-          return 'namespace';
-        }
-
         const relativePath = relative(import.meta.dirname, id).replaceAll('\\', '/')
-        if (relativePath === 'browser/assert.js') {
+        if (relativePath === 'browser/assert.js' || relativePath === 'browser/events.js') {
           return true;
         }
 
         if (
           relativePath.startsWith('browser/') ||
           relativePath.startsWith('lib/') ||
-          relativePath.startsWith('index.js') ||
-          relativePath.includes('node_modules/unenv')
+          relativePath.startsWith('index.js')
         ) {
           return 'namespace'
         }
 
-        console.log('requireReturnsDefault', id, relativePath)
         return false
       },
       transformMixedEsModules: true,
       defaultIsModuleExports: false,
-      strictRequires: false
+      strictRequires: 'auto'
     }),
     replace({
       values: {
         __filename: JSON.stringify(undefined),
-
-        'process.env.BROWSER': JSON.stringify(true),
 
         // web/websocket/util.js
         'process.versions.icu': JSON.stringify('75.1')
@@ -114,8 +96,8 @@ export default {
           replacement: resolve('./browser/assert.js')
         },
         {
-          find: /^(node:)?buffer$/,
-          replacement: 'unenv/node/buffer'
+          find: /^node:buffer$/,
+          replacement: resolve('./browser/buffer.js')
         },
         {
           find: /^node:async_hooks$/,
@@ -130,8 +112,8 @@ export default {
           replacement: resolve('./browser/diagnostics_channel.js')
         },
         {
-          find: /^(node:)?events$/,
-          replacement: 'unenv/node/events'
+          find: /^node:events$/,
+          replacement: resolve('./browser/events.js')
         },
         {
           find: /^node:http$/,
@@ -139,7 +121,7 @@ export default {
         },
         {
           find: /^node:net$/,
-          replacement: 'unenv/node/net'
+          replacement: resolve('./browser/net.js')
         },
         {
           find: /^node:perf_hooks$/,
@@ -152,10 +134,6 @@ export default {
         {
           find: /^(node:)?stream\/web$/,
           replacement: resolve('./browser/stream/web.js')
-        },
-        {
-          find: /^node:tls$/,
-          replacement: resolve('./browser/tls.js')
         },
         {
           find: /^node:url$/,
@@ -186,7 +164,7 @@ export default {
     nodeResolvePlugin({ browser: true, preferBuiltins: false }),
     injectPlugin({
       modules: {
-        Buffer: ['unenv/node/buffer', 'Buffer'],
+        Buffer: ['buffer', 'Buffer'],
         process: resolve('./browser/process.js'),
         global: resolve('./browser/global.js'),
         setTimeout: [resolve('./browser/set-timeout.js'), 'setTimeout'],
