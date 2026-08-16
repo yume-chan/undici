@@ -1,6 +1,6 @@
 {
   "name": "@yume-chan/undici-browser",
-  "version": "8.9.0-browser.0",
+  "version": "8.10.0-browser.0",
   "description": "An HTTP/1.1 client, forked for browsers",
   "homepage": "https://undici.nodejs.org",
   "bugs": {
